@@ -11,6 +11,7 @@ import drafterTePremium from '../drafter-te-premium';
 import drafterYouthMovement from '../drafter-youth-movement';
 import drafterContrarian from '../drafter-contrarian';
 import drafterRiskAverse from '../drafter-risk-averse';
+import drafterReactive from '../drafter-reactive';
 import { assignPersonas, KV_PERSONA_ASSIGNMENTS, type PersonaAssignment } from '../../lib/persona-assignment';
 import { analyzeBoardState, detectPersonaShift } from '../../lib/board-analysis';
 import {
@@ -51,6 +52,7 @@ const DRAFTER_AGENTS: Record<string, typeof drafterBalanced> = {
 	'drafter-youth-movement': drafterYouthMovement,
 	'drafter-contrarian': drafterContrarian,
 	'drafter-risk-averse': drafterRiskAverse,
+	'drafter-reactive': drafterReactive,
 };
 
 // --- Schemas ---

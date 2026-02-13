@@ -252,6 +252,39 @@ export function detectPersonaShift(
 			}
 			break;
 		}
+
+		case 'drafter-reactive': {
+			// Reactive's normal behavior is following trends. A shift is when they DON'T follow.
+			const activeRuns = boardAnalysis.positionRuns.filter((r) => r.count >= 2);
+			const bigDrops = boardAnalysis.valueDrops.filter((d) => d.adpDiff >= 8);
+
+			// If there's an active position run but they picked a different position
+			if (activeRuns.length > 0) {
+				const followedRun = activeRuns.find((r) => r.position === position);
+				if (!followedRun) {
+					const runPositions = activeRuns.map((r) => r.position).join(', ');
+					return `Reactive persona ignored a ${runPositions} position run and drafted ${pick.playerName} (${position}) instead of following the herd.`;
+				}
+			}
+
+			// If there's a major value drop but they picked someone else
+			if (bigDrops.length > 0 && activeRuns.length === 0) {
+				const topDrop = bigDrops[0]!;
+				const pickedTheDrop = topDrop.player.playerId === pick.playerId;
+				if (!pickedTheDrop) {
+					return `Reactive persona passed on ${topDrop.player.name} (${topDrop.player.position}, fallen ${topDrop.adpDiff} spots) to draft ${pick.playerName} instead.`;
+				}
+			}
+
+			// If scarcity alert but they drafted a non-scarce position
+			if (boardAnalysis.scarcity.length > 0 && activeRuns.length === 0 && bigDrops.length === 0) {
+				const scarcePositions = boardAnalysis.scarcity.map((s) => s.position);
+				if (!scarcePositions.includes(position)) {
+					return `Reactive persona ignored scarcity alerts at ${scarcePositions.join(', ')} and drafted ${pick.playerName} (${position}).`;
+				}
+			}
+			break;
+		}
 	}
 
 	return null;

@@ -5,6 +5,7 @@ import drafterBalanced from '../agent/drafter-balanced/index.js';
 import drafterBold from '../agent/drafter-bold/index.js';
 import drafterContrarian from '../agent/drafter-contrarian/index.js';
 import drafterQbFirst from '../agent/drafter-qb-first/index.js';
+import drafterReactive from '../agent/drafter-reactive/index.js';
 import drafterRiskAverse from '../agent/drafter-risk-averse/index.js';
 import drafterStackBuilder from '../agent/drafter-stack-builder/index.js';
 import drafterStudRb from '../agent/drafter-stud-rb/index.js';
@@ -187,6 +188,40 @@ export type DrafterQbFirstAgent = AgentRunner<
 	DrafterQbFirstInputSchema,
 	DrafterQbFirstOutputSchema,
 	typeof drafterQbFirst['stream'] extends true ? true : false
+>;
+
+/**
+ * Input type for drafter-reactive agent
+ * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+ */
+export type DrafterReactiveInput = InferInput<typeof drafterReactive['inputSchema']>;
+
+/**
+ * Output type for drafter-reactive agent
+ * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+ */
+export type DrafterReactiveOutput = InferOutput<typeof drafterReactive['outputSchema']>;
+
+/**
+ * Input schema type for drafter-reactive agent
+ * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+ */
+export type DrafterReactiveInputSchema = typeof drafterReactive['inputSchema'];
+
+/**
+ * Output schema type for drafter-reactive agent
+ * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+ */
+export type DrafterReactiveOutputSchema = typeof drafterReactive['outputSchema'];
+
+/**
+ * Agent type for drafter-reactive
+ * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+ */
+export type DrafterReactiveAgent = AgentRunner<
+	DrafterReactiveInputSchema,
+	DrafterReactiveOutputSchema,
+	typeof drafterReactive['stream'] extends true ? true : false
 >;
 
 /**
@@ -485,6 +520,12 @@ export const AgentDefinitions = {
 	 */
 	drafterQbFirst,
 	/**
+	 * drafter-reactive
+	 * Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.
+	 * @type {DrafterReactiveAgent}
+	 */
+	drafterReactive,
+	/**
 	 * drafter-risk-averse
 	 * Conservative, floor-based drafter that picks the safest option with the highest floor every time.
 	 * @type {DrafterRiskAverseAgent}
@@ -541,6 +582,7 @@ declare module "@agentuity/runtime" {
 		drafterBold: DrafterBoldAgent;
 		drafterContrarian: DrafterContrarianAgent;
 		drafterQbFirst: DrafterQbFirstAgent;
+		drafterReactive: DrafterReactiveAgent;
 		drafterRiskAverse: DrafterRiskAverseAgent;
 		drafterStackBuilder: DrafterStackBuilderAgent;
 		drafterStudRb: DrafterStudRbAgent;

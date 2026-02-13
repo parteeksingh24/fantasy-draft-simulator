@@ -20,6 +20,7 @@
         "ai": "^6.0.82",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
+        "framer-motion": "^12.34.0",
         "groq-sdk": "latest",
         "lucide-react": "^0.563.0",
         "openai": "latest",

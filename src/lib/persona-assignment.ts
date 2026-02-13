@@ -54,12 +54,32 @@ function weightedRandomPick(): string {
 export function assignPersonas(numTeams: number, humanTeamIndex: number): PersonaAssignment[] {
 	const assignments: PersonaAssignment[] = [];
 
+	// Collect AI slot indices (everything except the human)
+	const aiIndices: number[] = [];
 	for (let i = 0; i < numTeams; i++) {
 		if (i === humanTeamIndex) {
 			assignments.push({ teamIndex: i, persona: 'human' });
 		} else {
-			assignments.push({ teamIndex: i, persona: weightedRandomPick() });
+			assignments.push({ teamIndex: i, persona: '' }); // placeholder
+			aiIndices.push(i);
 		}
+	}
+
+	// Fisher-Yates shuffle the AI indices
+	for (let i = aiIndices.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[aiIndices[i], aiIndices[j]] = [aiIndices[j]!, aiIndices[i]!];
+	}
+
+	// Guarantee exactly 2 Reactive slots
+	const reactiveCount = Math.min(2, aiIndices.length);
+	for (let i = 0; i < reactiveCount; i++) {
+		assignments[aiIndices[i]!]!.persona = 'drafter-reactive';
+	}
+
+	// Fill remaining AI slots with weighted random picks
+	for (let i = reactiveCount; i < aiIndices.length; i++) {
+		assignments[aiIndices[i]!]!.persona = weightedRandomPick();
 	}
 
 	return assignments;

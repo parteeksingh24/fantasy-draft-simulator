@@ -99,6 +99,7 @@ export const PERSONA_DESCRIPTIONS: Record<string, string> = {
 	'drafter-youth-movement': 'Dynasty-minded. Strongly prefers young players under 26 and avoids aging veterans.',
 	'drafter-contrarian': 'Does the opposite of the room. If everyone drafts RBs, pivots to WR. Exploits positional runs.',
 	'drafter-risk-averse': 'Conservative, floor-based drafter. Picks the safest, most consistent option every time.',
+	'drafter-reactive': 'Panics on position runs and jumps on value drops. Always analyzes board trends first, then reacts emotionally.',
 	'human': 'You!',
 };
 
@@ -115,6 +116,7 @@ export const PERSONA_DISPLAY_NAMES: Record<string, string> = {
 	'drafter-youth-movement': 'Youth Move',
 	'drafter-contrarian': 'Contrarian',
 	'drafter-risk-averse': 'Risk Averse',
+	'drafter-reactive': 'Reactive',
 	'human': 'You',
 };
 
@@ -157,4 +159,5 @@ export const PERSONA_MODELS: Record<string, string> = {
 	'drafter-youth-movement': 'claude-haiku-4-5',
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',
 	'drafter-risk-averse': 'grok-4-1-fast-reasoning',
+	'drafter-reactive': 'gpt-5-mini',
 };

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import './App.css';
 import { cn } from './lib/utils';
 import { api } from './lib/api';
-import type { BoardState, Player, Roster, Pick, PersonaAssignment, StrategyShift } from './lib/types';
+import type { BoardState, Player, Roster, PersonaAssignment, StrategyShift } from './lib/types';
 import { TEAM_NAMES, NUM_TEAMS } from './lib/types';
 import { DraftBoard } from './components/DraftBoard';
 import { DraftControls } from './components/DraftControls';
@@ -23,7 +24,6 @@ export function App() {
 	const [players, setPlayers] = useState<Player[]>([]);
 	const [personas, setPersonas] = useState<PersonaAssignment[] | null>(null);
 	const [shifts, setShifts] = useState<StrategyShift[]>([]);
-	const [lastAiPick, setLastAiPick] = useState<Pick | null>(null);
 
 	// UI state
 	const [humanTeamIndex, setHumanTeamIndex] = useState<number | null>(null);
@@ -38,6 +38,18 @@ export function App() {
 
 	// SSE streaming hook
 	const stream = useAdvanceStream();
+
+	// Panel visibility with exit delay
+	const [showThinkingPanel, setShowThinkingPanel] = useState(false);
+
+	useEffect(() => {
+		if (stream.isStreaming) {
+			setShowThinkingPanel(true);
+		} else if (showThinkingPanel) {
+			const timer = setTimeout(() => setShowThinkingPanel(false), 1500);
+			return () => clearTimeout(timer);
+		}
+	}, [stream.isStreaming, showThinkingPanel]);
 
 	// Refs to prevent duplicate concurrent calls
 	const advancingRef = useRef(false);
@@ -127,7 +139,6 @@ export function App() {
 		setPlayers([]);
 		setPersonas(null);
 		setShifts([]);
-		setLastAiPick(null);
 		setHumanTeamIndex(null);
 		setAdvancing(false);
 		setPicking(false);
@@ -179,9 +190,6 @@ export function App() {
 
 	// Handle SSE stream completion: when a pick arrives, update state
 	useEffect(() => {
-		if (stream.pick) {
-			setLastAiPick(stream.pick);
-		}
 		if (stream.boardState) {
 			setBoard(stream.boardState);
 		}
@@ -193,7 +201,7 @@ export function App() {
 			refreshPlayers();
 			refreshStrategies();
 		}
-	}, [stream.pick, stream.boardState, stream.rosters, stream.draftComplete, refreshPlayers, refreshStrategies]);
+	}, [stream.boardState, stream.rosters, stream.draftComplete, refreshPlayers, refreshStrategies]);
 
 	// Reset advancing state when stream finishes
 	useEffect(() => {
@@ -310,19 +318,29 @@ export function App() {
 				)}
 
 				{/* Error banner */}
-				{error && (
-					<div className="px-6 py-2 bg-red-500/10 border-b border-red-500/20">
-						<div className="max-w-[1600px] mx-auto flex items-center justify-between">
-							<span className="text-xs text-red-400">{error}</span>
-							<button
-								onClick={() => setError(null)}
-								className="text-xs text-red-500 hover:text-red-400 cursor-pointer"
-							>
-								Dismiss
-							</button>
-						</div>
-					</div>
-				)}
+				<AnimatePresence>
+					{error && (
+						<motion.div
+							initial={{ height: 0, opacity: 0 }}
+							animate={{ height: 'auto', opacity: 1 }}
+							exit={{ height: 0, opacity: 0 }}
+							transition={{ duration: 0.2 }}
+							className="overflow-hidden"
+						>
+							<div className="px-6 py-2 bg-red-500/10 border-b border-red-500/20">
+								<div className="max-w-[1600px] mx-auto flex items-center justify-between">
+									<span className="text-xs text-red-400">{error}</span>
+									<button
+										onClick={() => setError(null)}
+										className="text-xs text-red-500 hover:text-red-400 cursor-pointer"
+									>
+										Dismiss
+									</button>
+								</div>
+							</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
 
 				{/* Main content */}
 				<div className="flex-1 px-6 pb-6 max-w-[1600px] mx-auto w-full flex flex-col">
@@ -448,13 +466,14 @@ export function App() {
 								humanTeamIndex={resolvedTeamIndex}
 								personas={personas}
 								shifts={shifts}
+								latestPickNumber={board?.picks.length ? board.picks[board.picks.length - 1]!.pickNumber : undefined}
 							/>
 
 							{/* Bottom section: PlayerPicker + ThinkingPanel with fixed height */}
 							{!draftComplete && (
 								<div className="flex gap-4" style={{ height: '420px' }}>
-									{/* Left: Player picker (always visible) */}
-									<div className="flex-1 min-w-0 overflow-hidden">
+									{/* Left: Player picker (always visible, smoothly expands) */}
+									<motion.div layout className="flex-1 min-w-0 overflow-hidden">
 										{playersLoading && players.length === 0 ? (
 											<div className="h-full flex items-center justify-center bg-gray-900/80 rounded-xl border border-gray-800/50">
 												<p className="text-sm text-gray-600">Loading players...</p>
@@ -468,75 +487,88 @@ export function App() {
 												picking={picking}
 											/>
 										)}
-									</div>
+									</motion.div>
 
-									{/* Right: Thinking panel (aligned with player picker) */}
-									<div className="w-80 flex-shrink-0 overflow-hidden">
-										<ThinkingPanel
-											lastPick={lastAiPick}
-											personas={personas}
-											shifts={shifts}
-											isStreaming={stream.isStreaming}
-											streamTokens={stream.tokens}
-											streamPersona={stream.persona}
-											streamModel={stream.model}
-											streamTeamIndex={stream.teamIndex}
-											isHumanTurn={isHumanTurn && !draftComplete}
-											toolCalls={stream.toolCalls}
-										/>
-									</div>
+									{/* Right: Thinking panel (slides in/out) */}
+									<AnimatePresence>
+										{showThinkingPanel && (
+											<motion.div
+												initial={{ width: 0, opacity: 0, x: 40 }}
+												animate={{ width: 320, opacity: 1, x: 0 }}
+												exit={{ width: 0, opacity: 0, x: 40 }}
+												transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+												className="flex-shrink-0 overflow-hidden"
+											>
+												<ThinkingPanel
+													personas={personas}
+													isStreaming={stream.isStreaming}
+													streamTokens={stream.tokens}
+													streamPersona={stream.persona}
+													streamModel={stream.model}
+													streamTeamIndex={stream.teamIndex}
+													toolCalls={stream.toolCalls}
+												/>
+											</motion.div>
+										)}
+									</AnimatePresence>
 								</div>
 							)}
 
 							{/* Draft complete summary */}
 							{draftComplete && (
-								<Card className="bg-gray-900/60 border-green-500/20">
-									<CardHeader>
-										<CardTitle className="text-sm text-green-400">
-											Draft Complete
-										</CardTitle>
-									</CardHeader>
-									<CardContent>
-										<div className="grid grid-cols-4 gap-3">
-											{rosters.map((roster) => {
-												const isHuman = roster.teamIndex === resolvedTeamIndex;
-												return (
-													<Card
-														key={roster.teamIndex}
-														size="sm"
-														className={cn(
-															'p-2 gap-1 shadow-none',
-															isHuman
-																? 'bg-cyan-500/10 border-cyan-500/20'
-																: 'bg-gray-900/50 border-gray-800',
-														)}
-													>
-														<div className={cn(
-															'text-xs font-semibold',
-															isHuman ? 'text-cyan-400' : 'text-gray-400',
-														)}>
-															{TEAM_NAMES[roster.teamIndex]}
-															{isHuman && ' (You)'}
-														</div>
-														{(['qb', 'rb', 'wr', 'te', 'superflex'] as const).map((slot) => {
-															const player = roster[slot];
-															return (
-																<div key={slot} className="text-xs text-gray-500 flex justify-between py-0.5">
-																	<span className="uppercase text-gray-600 w-6">
-																		{slot === 'superflex' ? 'FX' : slot}
-																	</span>
-																	<span className="text-gray-400 truncate flex-1 text-right">
-																		{player?.name ?? '--'}
-																	</span>
-																</div>
-															);
-														})}
-													</Card>
-												);
-											})}
-										</div>
-									</CardContent>
-								</Card>
+								<motion.div
+									initial={{ opacity: 0, y: 20 }}
+									animate={{ opacity: 1, y: 0 }}
+									transition={{ duration: 0.4, ease: 'easeOut' }}
+								>
+									<Card className="bg-gray-900/60 border-green-500/20">
+										<CardHeader>
+											<CardTitle className="text-sm text-green-400">
+												Draft Complete
+											</CardTitle>
+										</CardHeader>
+										<CardContent>
+											<div className="grid grid-cols-4 gap-3">
+												{rosters.map((roster) => {
+													const isHuman = roster.teamIndex === resolvedTeamIndex;
+													return (
+														<Card
+															key={roster.teamIndex}
+															size="sm"
+															className={cn(
+																'p-2 gap-1 shadow-none',
+																isHuman
+																	? 'bg-cyan-500/10 border-cyan-500/20'
+																	: 'bg-gray-900/50 border-gray-800',
+															)}
+														>
+															<div className={cn(
+																'text-xs font-semibold',
+																isHuman ? 'text-cyan-400' : 'text-gray-400',
+															)}>
+																{TEAM_NAMES[roster.teamIndex]}
+																{isHuman && ' (You)'}
+															</div>
+															{(['qb', 'rb', 'wr', 'te', 'superflex'] as const).map((slot) => {
+																const player = roster[slot];
+																return (
+																	<div key={slot} className="text-xs text-gray-500 flex justify-between py-0.5">
+																		<span className="uppercase text-gray-600 w-6">
+																			{slot === 'superflex' ? 'FX' : slot}
+																		</span>
+																		<span className="text-gray-400 truncate flex-1 text-right">
+																			{player?.name ?? '--'}
+																		</span>
+																	</div>
+																);
+															})}
+														</Card>
+													);
+												})}
+											</div>
+										</CardContent>
+									</Card>
+								</motion.div>
 							)}
 						</div>
 					)}

@@ -1,3 +1,4 @@
+import { motion } from 'framer-motion';
 import Markdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import type { BoardState, Pick, Position, StrategyShift, PersonaAssignment } from '../lib/types';
@@ -10,9 +11,10 @@ interface DraftBoardProps {
 	humanTeamIndex: number;
 	personas: PersonaAssignment[] | null;
 	shifts: StrategyShift[];
+	latestPickNumber?: number;
 }
 
-export function DraftBoard({ board, humanTeamIndex, personas, shifts }: DraftBoardProps) {
+export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPickNumber }: DraftBoardProps) {
 	// Build a lookup map: `${round}-${teamIndex}` -> Pick
 	const pickMap = new Map<string, Pick>();
 	if (board) {
@@ -44,6 +46,16 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts }: DraftBoa
 	function isOnTheClock(round: number, teamIndex: number): boolean {
 		if (!board || board.draftComplete) return false;
 		return board.currentPick.round === round && board.currentPick.teamIndex === teamIndex;
+	}
+
+	function getGlowColor(pos: string): string {
+		switch (pos) {
+			case 'QB': return 'rgba(239, 68, 68, 0.4)';   // red
+			case 'RB': return 'rgba(0, 255, 255, 0.4)';    // cyan
+			case 'WR': return 'rgba(34, 197, 94, 0.4)';    // green
+			case 'TE': return 'rgba(249, 115, 22, 0.4)';   // orange
+			default: return 'rgba(255, 255, 255, 0.2)';
+		}
 	}
 
 	return (
@@ -159,39 +171,55 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts }: DraftBoa
 
 							if (pick) {
 								const colors = POSITION_COLORS[pick.position as Position];
+								const isLatest = pick.pickNumber === latestPickNumber;
+
+								const cellClasses = cn(
+									'relative rounded-md px-2 py-2 cursor-pointer transition-all duration-150',
+									'border',
+									colors.bg,
+									colors.border,
+									isHumanCol && 'ring-1 ring-cyan-500/20',
+									'hover:brightness-125 hover:scale-[1.02]',
+								);
+
+								const cellContent = (
+									<>
+										<div className={cn('text-sm font-semibold truncate', colors.text)}>
+											{pick.playerName}
+										</div>
+										<div className="flex items-center justify-between mt-0.5">
+											<span className={cn('text-xs font-mono', colors.text)}>
+												{pick.position}
+											</span>
+											<span className="text-xs text-gray-600">
+												#{pick.pickNumber}
+											</span>
+										</div>
+										{pickShift && (
+											<div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-yellow-500 text-black text-[10px] font-bold flex items-center justify-center">
+												!
+											</div>
+										)}
+									</>
+								);
+
 								return (
 									<Tooltip key={teamIdx} delayDuration={300}>
 										<TooltipTrigger asChild>
-											<div
-												className={cn(
-													'relative rounded-md px-2 py-2 cursor-pointer transition-all duration-150',
-													'border',
-													colors.bg,
-													colors.border,
-													isHumanCol && 'ring-1 ring-cyan-500/20',
-													'hover:brightness-125 hover:scale-[1.02]',
-												)}
-											>
-												<div className={cn('text-sm font-semibold truncate', colors.text)}>
-													{pick.playerName}
+											{isLatest ? (
+												<motion.div
+													initial={{ scale: 1.08, boxShadow: `0 0 16px ${getGlowColor(pick.position)}` }}
+													animate={{ scale: 1, boxShadow: '0 0 0px transparent' }}
+													transition={{ duration: 0.6, ease: 'easeOut' }}
+													className={cellClasses}
+												>
+													{cellContent}
+												</motion.div>
+											) : (
+												<div className={cellClasses}>
+													{cellContent}
 												</div>
-												<div className="flex items-center justify-between mt-0.5">
-													<span className={cn('text-xs font-mono', colors.text)}>
-														{pick.position}
-													</span>
-													<span className="text-xs text-gray-600">
-														#{pick.pickNumber}
-													</span>
-												</div>
-												{/* Strategy shift indicator */}
-												{pickShift && (
-													<div
-														className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-yellow-500 text-black text-[10px] font-bold flex items-center justify-center"
-													>
-														!
-													</div>
-												)}
-											</div>
+											)}
 										</TooltipTrigger>
 										<TooltipContent
 											side="top"

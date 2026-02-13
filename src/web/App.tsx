@@ -3,8 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import './App.css';
 import { cn } from './lib/utils';
 import { api } from './lib/api';
-import type { BoardState, Player, Roster, PersonaAssignment, StrategyShift } from './lib/types';
-import { TEAM_NAMES, NUM_TEAMS, PERSONA_DISPLAY_NAMES } from './lib/types';
+import type { BoardState, Player, Roster, PersonaAssignment, StrategyShift, TeamShiftSummary } from './lib/types';
+import { TEAM_NAMES, NUM_TEAMS, PERSONA_DISPLAY_NAMES, SHIFT_CATEGORY_LABELS } from './lib/types';
 import { DraftBoard } from './components/DraftBoard';
 import { DraftControls } from './components/DraftControls';
 import { PlayerPicker } from './components/PlayerPicker';
@@ -26,6 +26,7 @@ export function App() {
 	const [players, setPlayers] = useState<Player[]>([]);
 	const [personas, setPersonas] = useState<PersonaAssignment[] | null>(null);
 	const [shifts, setShifts] = useState<StrategyShift[]>([]);
+	const [teamShiftSummary, setTeamShiftSummary] = useState<TeamShiftSummary[]>([]);
 
 	// UI state
 	const [humanTeamIndex, setHumanTeamIndex] = useState<number | null>(null);
@@ -51,10 +52,15 @@ export function App() {
 		if (stream.isStreaming) {
 			setShowThinkingPanel(true);
 		} else if (showThinkingPanel) {
+			// Keep panel open between consecutive AI picks to avoid collapse/expand flash.
+			// Only start the hide timer when the next turn is the human's or the draft is over.
+			const nextIsAI = board && !board.draftComplete && !board.currentPick.isHuman;
+			if (nextIsAI) return;
+
 			const timer = setTimeout(() => setShowThinkingPanel(false), 1500);
 			return () => clearTimeout(timer);
 		}
-	}, [stream.isStreaming, showThinkingPanel]);
+	}, [stream.isStreaming, showThinkingPanel, board]);
 
 	// Refs to prevent duplicate concurrent calls
 	const advancingRef = useRef(false);
@@ -101,6 +107,7 @@ export function App() {
 			if (Array.isArray(data.shifts)) {
 				setShifts(data.shifts);
 			}
+			setTeamShiftSummary(Array.isArray(data.teamShiftSummary) ? data.teamShiftSummary : []);
 		} catch {
 			// No strategies yet
 		}
@@ -156,6 +163,9 @@ export function App() {
 				if (strategiesResult.status === 'fulfilled') {
 					if (strategiesResult.value.personas) setPersonas(strategiesResult.value.personas);
 					if (Array.isArray(strategiesResult.value.shifts)) setShifts(strategiesResult.value.shifts);
+					setTeamShiftSummary(
+						Array.isArray(strategiesResult.value.teamShiftSummary) ? strategiesResult.value.teamShiftSummary : [],
+					);
 				}
 				if (playersResult.status === 'rejected' || strategiesResult.status === 'rejected') {
 					setError('Draft resumed, but some data failed to load. Try refreshing.');
@@ -178,6 +188,7 @@ export function App() {
 		setPlayers([]);
 		setPersonas(null);
 		setShifts([]);
+		setTeamShiftSummary([]);
 		setShiftBanner(null);
 		setHumanTeamIndex(null);
 		setAdvancing(false);
@@ -193,17 +204,18 @@ export function App() {
 		startingRef.current = true;
 		setStarting(true);
 		setError(null);
-			try {
-				// Resolve random position at start time
-				const resolvedIndex = humanTeamIndex ?? Math.floor(Math.random() * NUM_TEAMS);
-				setHumanTeamIndex(resolvedIndex);
-				setShiftBanner(null);
-				const result = await api.startDraft(resolvedIndex);
+		try {
+			// Resolve random position at start time
+			const resolvedIndex = humanTeamIndex ?? Math.floor(Math.random() * NUM_TEAMS);
+			setHumanTeamIndex(resolvedIndex);
+			setShiftBanner(null);
+			const result = await api.startDraft(resolvedIndex);
 			// Use enriched response directly (no follow-up API calls needed)
 			setBoard(result.boardState);
 			setPlayers(result.players);
 			setRosters(result.rosters);
 			setPersonas(result.personas);
+			setTeamShiftSummary([]);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : 'Failed to start draft');
 		} finally {
@@ -252,14 +264,15 @@ export function App() {
 		}
 	}, [stream.strategyShift]);
 
-	// Reset advancing state when stream finishes
+	// Reset advancing state when stream finishes.
+	// Stream errors are shown inline in the ThinkingPanel (not the global error banner)
+	// to avoid a layout jump from the banner animating in while the panel collapses.
 	useEffect(() => {
 		if (!stream.isStreaming && advancingRef.current) {
 			setAdvancing(false);
 			advancingRef.current = false;
 		}
 		if (stream.error) {
-			setError(stream.error);
 			setAdvancing(false);
 			advancingRef.current = false;
 		}
@@ -514,23 +527,31 @@ export function App() {
 								{shiftBanner && (
 									<Card className="bg-yellow-500/10 border-yellow-500/25 py-3">
 										<CardContent className="px-4">
-											<div className="flex items-start justify-between gap-3">
-												<div className="flex items-center gap-2">
-													<Badge className="bg-yellow-500/20 border-yellow-500/30 text-yellow-300 text-[10px] h-auto py-0.5 px-1.5">
-														!
-													</Badge>
-													<div className="min-w-0">
-														<p className="text-xs text-yellow-300 font-medium">
-															Strategy Shift • Pick #{shiftBanner.pickNumber}
-														</p>
-														<p className="text-xs text-yellow-400/90 truncate">
-															{PERSONA_DISPLAY_NAMES[shiftBanner.persona] ?? shiftBanner.persona} ({TEAM_NAMES[shiftBanner.teamIndex]}) changed approach
-														</p>
+												<div className="flex items-start justify-between gap-3">
+													<div className="flex items-center gap-2">
+														<Badge className="bg-yellow-500/20 border-yellow-500/30 text-yellow-300 text-[10px] h-auto py-0.5 px-1.5">
+															!
+														</Badge>
+														<div className="min-w-0">
+															<p className="text-xs text-yellow-300 font-medium">
+																Strategy Shift • Pick #{shiftBanner.pickNumber}
+															</p>
+															<p className="text-xs text-yellow-400/90 truncate">
+																{PERSONA_DISPLAY_NAMES[shiftBanner.persona] ?? shiftBanner.persona} ({TEAM_NAMES[shiftBanner.teamIndex]}) changed approach
+															</p>
+														</div>
 													</div>
+													<span className="text-xs text-yellow-200/80 max-w-[48rem] truncate">
+														{shiftBanner.trigger}
+													</span>
 												</div>
-												<span className="text-xs text-yellow-200/80 max-w-[48rem] truncate">
-													{shiftBanner.trigger}
-												</span>
+												<div className="mt-2 flex items-center gap-2">
+												<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
+													{SHIFT_CATEGORY_LABELS[shiftBanner.category]}
+												</Badge>
+												<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
+													{shiftBanner.severity}
+												</Badge>
 											</div>
 										</CardContent>
 									</Card>
@@ -538,32 +559,33 @@ export function App() {
 
 								{/* Top section: Draft Board (full width, prominent) */}
 								<DraftBoard
-								board={board}
-								humanTeamIndex={resolvedTeamIndex}
-								personas={personas}
-								shifts={shifts}
-								latestPickNumber={board?.picks.length ? board.picks[board.picks.length - 1]!.pickNumber : undefined}
-							/>
+									board={board}
+									humanTeamIndex={resolvedTeamIndex}
+									personas={personas}
+									shifts={shifts}
+									teamShiftSummary={teamShiftSummary}
+									latestPickNumber={board?.picks.length ? board.picks[board.picks.length - 1]!.pickNumber : undefined}
+								/>
 
-							{/* Bottom section: PlayerPicker + ThinkingPanel with fixed height */}
-							{!draftComplete && (
-								<div className="flex gap-4" style={{ height: '420px' }}>
-									{/* Left: Player picker (always visible, smoothly expands) */}
-									<div className="flex-1 min-w-0 overflow-hidden">
-										{playersLoading && players.length === 0 ? (
-											<div className="h-full flex items-center justify-center bg-gray-900/80 rounded-xl border border-gray-800/50">
-												<p className="text-sm text-gray-600">Loading players...</p>
+									{/* Bottom section: PlayerPicker + ThinkingPanel with fixed height */}
+									{!draftComplete && (
+										<div className="flex gap-4" style={{ height: '420px' }}>
+											{/* Left: Player picker (always visible, smoothly expands) */}
+											<div className="flex-1 min-w-0 overflow-hidden">
+												{playersLoading && players.length === 0 ? (
+													<div className="h-full flex items-center justify-center bg-gray-900/80 rounded-xl border border-gray-800/50">
+														<p className="text-sm text-gray-600">Loading players...</p>
+													</div>
+												) : (
+													<PlayerPicker
+														players={players}
+														roster={humanRoster}
+														isHumanTurn={isHumanTurn}
+														onPick={handlePick}
+														picking={picking}
+													/>
+												)}
 											</div>
-										) : (
-											<PlayerPicker
-												players={players}
-												roster={humanRoster}
-												isHumanTurn={isHumanTurn}
-												onPick={handlePick}
-												picking={picking}
-											/>
-										)}
-									</div>
 
 									{/* Right: Thinking panel (slides in/out) */}
 									<AnimatePresence>
@@ -584,6 +606,7 @@ export function App() {
 													streamTeamIndex={stream.teamIndex}
 													toolCalls={stream.toolCalls}
 													boardContext={stream.boardContext}
+													streamError={stream.error}
 												/>
 											</motion.div>
 										)}

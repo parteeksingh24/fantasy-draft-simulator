@@ -61,6 +61,15 @@ export interface PersonaAssignment {
 	persona: string;
 }
 
+export type ShiftCategory =
+	| 'strategy-break'
+	| 'value-deviation'
+	| 'trend-follow'
+	| 'trend-fade'
+	| 'positional-pivot';
+
+export type ShiftSeverity = 'minor' | 'major';
+
 export interface StrategyShift {
 	pickNumber: number;
 	teamIndex: number;
@@ -69,6 +78,16 @@ export interface StrategyShift {
 	reasoning: string;
 	playerPicked: string;
 	position: Position;
+	category: ShiftCategory;
+	severity: ShiftSeverity;
+}
+
+export interface TeamShiftSummary {
+	teamIndex: number;
+	totalShifts: number;
+	last3TeamPicksShiftCount: number;
+	majorShiftCount: number;
+	topCategory: ShiftCategory | null;
 }
 
 export const NUM_TEAMS = 12;
@@ -143,10 +162,11 @@ export interface ToolCallRecord {
 
 // Color mapping for tool call cards in ThinkingPanel
 export const TOOL_COLORS: Record<string, { text: string; bg: string; border: string }> = {
-	searchPlayers: { text: 'text-cyan-400', bg: 'bg-cyan-500/20', border: 'border-cyan-500/30' },
 	getTopAvailable: { text: 'text-blue-400', bg: 'bg-blue-500/20', border: 'border-blue-500/30' },
 	analyzeBoardTrends: { text: 'text-yellow-400', bg: 'bg-yellow-500/20', border: 'border-yellow-500/30' },
 	getTeamRoster: { text: 'text-green-400', bg: 'bg-green-500/20', border: 'border-green-500/30' },
+	getDraftIntel: { text: 'text-cyan-400', bg: 'bg-cyan-500/20', border: 'border-cyan-500/30' },
+	writeScoutingNote: { text: 'text-purple-400', bg: 'bg-purple-500/20', border: 'border-purple-500/30' },
 };
 
 // Model names for each persona
@@ -163,4 +183,12 @@ export const PERSONA_MODELS: Record<string, string> = {
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',
 	'drafter-risk-averse': 'grok-4-1-fast-reasoning',
 	'drafter-reactive': 'gpt-5-mini',
+};
+
+export const SHIFT_CATEGORY_LABELS: Record<ShiftCategory, string> = {
+	'strategy-break': 'Strategy Break',
+	'value-deviation': 'Value Deviation',
+	'trend-follow': 'Trend Follow',
+	'trend-fade': 'Trend Fade',
+	'positional-pivot': 'Positional Pivot',
 };

@@ -56,31 +56,31 @@ export type CommissionerAgent = AgentRunner<
 
 /**
  * Input type for drafter-balanced agent
- * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+ * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
  */
 export type DrafterBalancedInput = InferInput<typeof drafterBalanced['inputSchema']>;
 
 /**
  * Output type for drafter-balanced agent
- * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+ * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
  */
 export type DrafterBalancedOutput = InferOutput<typeof drafterBalanced['outputSchema']>;
 
 /**
  * Input schema type for drafter-balanced agent
- * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+ * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
  */
 export type DrafterBalancedInputSchema = typeof drafterBalanced['inputSchema'];
 
 /**
  * Output schema type for drafter-balanced agent
- * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+ * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
  */
 export type DrafterBalancedOutputSchema = typeof drafterBalanced['outputSchema'];
 
 /**
  * Agent type for drafter-balanced
- * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+ * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
  */
 export type DrafterBalancedAgent = AgentRunner<
 	DrafterBalancedInputSchema,
@@ -497,7 +497,7 @@ export const AgentDefinitions = {
 	commissioner,
 	/**
 	 * drafter-balanced
-	 * AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.
+	 * AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.
 	 * @type {DrafterBalancedAgent}
 	 */
 	drafterBalanced,

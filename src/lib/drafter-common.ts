@@ -6,7 +6,6 @@
 import { s } from '@agentuity/schema';
 import { Output, generateText, stepCountIs } from 'ai';
 import type { LanguageModel } from 'ai';
-import type { VectorStorage } from '@agentuity/core';
 import type { KeyValueStorage } from '@agentuity/core';
 import { z } from 'zod';
 import {
@@ -47,6 +46,7 @@ export const DrafterOutputSchema = s.object({
 	position: PositionSchema.describe('Selected player position'),
 	reasoning: s.string().describe('Why this player was selected'),
 	confidence: s.number().describe('Confidence score 0-1'),
+	toolsUsed: s.array(s.string()).describe('Tool names called during this pick decision'),
 });
 
 // Structured output schema for AI SDK output: Output.object(...)
@@ -169,8 +169,7 @@ Select the best available player for ${teamName}. You MUST pick a player whose p
 
 /**
  * Build the candidate player list by filtering to positions that fit the
- * roster and sorting by rank. No Vector search needed; rank-sorting
- * produces equivalent results with less latency.
+ * roster and sorting by rank.
  *
  * @param availablePlayers - All players still on the board
  * @param roster - Current team roster (for slot eligibility)
@@ -239,13 +238,19 @@ Open Slots: ${slotsDisplay}
 Recent Picks by Other Teams:
 ${recentPicksDisplay}
 ${boardAnalysisSection}
-Use your tools to research the best pick for your team. Call getTopAvailable to see who's on the board, searchPlayers to find specific player profiles, analyzeBoardTrends to check for runs or value drops, and getTeamRoster to see what other teams have.
+Use your tools to research the best pick for your team:
+- getTopAvailable: rank-sorted available players
+- analyzeBoardTrends: position runs, value drops, scarcity
+- getTeamRoster: any team's roster and open slots
+- getDraftIntel: your scouting notes + recent picks reasoning + your recent strategy shifts
+- writeScoutingNote: save an observation for future rounds
 
-Tool discipline rules:
-- Call getTopAvailable first before doing deep searches.
-- Avoid repeating the exact same searchPlayers query.
-- Call analyzeBoardTrends at most once unless major context changed.
-- You have a limited step budget, so keep tool calls concise.
+Tool discipline:
+- Start with getTopAvailable.
+- Call analyzeBoardTrends at most once.
+- Call getDraftIntel early to review your prior notes, recent shifts, and what other teams did.
+- Write a scouting note only when you observe something worth remembering.
+- You have a budget of 5 tool calls. Spend them wisely.
 
 After researching, make your selection as JSON:
 {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
@@ -377,7 +382,6 @@ export function createDrafterHandler(config: {
 				error: (msg: string, data?: Record<string, unknown>) => void;
 			};
 			kv: KeyValueStorage;
-			vector: VectorStorage;
 		},
 		input: DrafterInput,
 	): Promise<DrafterOutput> => {
@@ -409,6 +413,7 @@ export function createDrafterHandler(config: {
 					? 'Roster is full, picking best available as fallback.'
 					: 'No eligible candidates found; picked highest-ranked available player by rank.',
 				confidence: fb === availablePlayers[0] ? 0.1 : 0.3,
+				toolsUsed: [],
 			};
 		}
 
@@ -416,12 +421,13 @@ export function createDrafterHandler(config: {
 
 		// Build tools for the LLM to research players
 		const tools = createDrafterTools({
-			vector: ctx.vector,
 			kv: ctx.kv,
 			availablePlayers,
 			roster,
 			picks: allPicks,
 			pickNumber,
+			teamIndex: input.teamIndex,
+			round,
 		});
 
 		// Build the tool-oriented prompt (no pre-built candidate list)
@@ -444,6 +450,7 @@ export function createDrafterHandler(config: {
 
 			let llmPick: DrafterStructuredOutput | null = null;
 			let fallbackReason: 'no_output' | 'invalid_json' | 'model_error' | null = null;
+			let toolsUsed: string[] = [];
 
 			try {
 				if (generationMode === 'structured_with_tools') {
@@ -458,9 +465,10 @@ export function createDrafterHandler(config: {
 							description: 'Final fantasy draft pick selection.',
 						}),
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(4),
+						stopWhen: stepCountIs(5),
 					});
 					llmPick = result.output;
+					toolsUsed = [...new Set(result.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
 				} else {
 					const result = await generateText({
 						model: config.model,
@@ -468,9 +476,10 @@ export function createDrafterHandler(config: {
 						prompt: toolOrientedPrompt,
 						tools,
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(4),
+						stopWhen: stepCountIs(5),
 					});
 					llmPick = parseDrafterOutputFromText(result.text);
+					toolsUsed = [...new Set(result.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
 					if (!llmPick) {
 						fallbackReason = result.text.trim().length > 0 ? 'invalid_json' : 'no_output';
 					}
@@ -508,6 +517,7 @@ export function createDrafterHandler(config: {
 					position: selectedPlayer!.position,
 					reasoning: llmPick.reasoning,
 					confidence: Math.max(0, Math.min(1, llmPick.confidence)),
+					toolsUsed,
 				};
 			}
 
@@ -540,6 +550,7 @@ export function createDrafterHandler(config: {
 			position: fb.position,
 			reasoning: `Fallback pick: ${fb.name} is the highest-ranked available player (Rank ${fb.rank}) that fits an open roster slot.`,
 			confidence: 0.5,
+			toolsUsed,
 		};
 	};
 }

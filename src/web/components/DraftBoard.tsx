@@ -1,8 +1,8 @@
 import { motion } from 'framer-motion';
 import Markdown from 'react-markdown';
 import { cn } from '../lib/utils';
-import type { BoardState, Pick, Position, StrategyShift, PersonaAssignment } from '../lib/types';
-import { NUM_TEAMS, NUM_ROUNDS, TEAM_NAMES, POSITION_COLORS, PERSONA_DISPLAY_NAMES, PERSONA_DESCRIPTIONS, PERSONA_MODELS } from '../lib/types';
+import type { BoardState, Pick, Position, StrategyShift, PersonaAssignment, TeamShiftSummary } from '../lib/types';
+import { NUM_TEAMS, NUM_ROUNDS, TEAM_NAMES, POSITION_COLORS, PERSONA_DISPLAY_NAMES, PERSONA_DESCRIPTIONS, PERSONA_MODELS, SHIFT_CATEGORY_LABELS } from '../lib/types';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { Badge } from './ui/badge';
 
@@ -11,10 +11,11 @@ interface DraftBoardProps {
 	humanTeamIndex: number;
 	personas: PersonaAssignment[] | null;
 	shifts: StrategyShift[];
+	teamShiftSummary: TeamShiftSummary[];
 	latestPickNumber?: number;
 }
 
-export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPickNumber }: DraftBoardProps) {
+export function DraftBoard({ board, humanTeamIndex, personas, shifts, teamShiftSummary, latestPickNumber }: DraftBoardProps) {
 	// Build a lookup map: `${round}-${teamIndex}` -> Pick
 	const pickMap = new Map<string, Pick>();
 	if (board) {
@@ -27,6 +28,10 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPick
 	const shiftMap = new Map<number, StrategyShift>();
 	for (const shift of shifts) {
 		shiftMap.set(shift.pickNumber, shift);
+	}
+	const teamShiftSummaryMap = new Map<number, TeamShiftSummary>();
+	for (const summary of teamShiftSummary) {
+		teamShiftSummaryMap.set(summary.teamIndex, summary);
 	}
 
 	function getPersonaForTeam(teamIndex: number): string {
@@ -68,15 +73,16 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPick
 				<div className="text-sm text-gray-600 font-medium px-1 py-2 text-center">
 					Round
 				</div>
-				{Array.from({ length: NUM_TEAMS }, (_, i) => {
-					const isHuman = i === humanTeamIndex;
-					const persona = getPersonaForTeam(i);
-					const personaKey = getPersonaKeyForTeam(i);
-					const description = PERSONA_DESCRIPTIONS[personaKey] ?? '';
-					const modelName = PERSONA_MODELS[personaKey] ?? '';
+					{Array.from({ length: NUM_TEAMS }, (_, i) => {
+						const isHuman = i === humanTeamIndex;
+						const persona = getPersonaForTeam(i);
+						const personaKey = getPersonaKeyForTeam(i);
+						const description = PERSONA_DESCRIPTIONS[personaKey] ?? '';
+						const modelName = PERSONA_MODELS[personaKey] ?? '';
+						const summary = teamShiftSummaryMap.get(i);
 
-					return (
-						<Tooltip key={i} delayDuration={0}>
+						return (
+							<Tooltip key={i} delayDuration={0}>
 							<TooltipTrigger asChild>
 								<div
 									className={cn(
@@ -132,6 +138,34 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPick
 													</span>
 												</div>
 											)}
+											{summary && (
+												<div className="space-y-1">
+													<div className="flex items-center justify-between">
+														<span className="text-xs text-gray-500">Shifts</span>
+														<span className="text-xs text-gray-300">
+															{summary.totalShifts}
+														</span>
+													</div>
+													<div className="flex items-center justify-between">
+														<span className="text-xs text-gray-500">Last 3 team picks</span>
+														<span className="text-xs text-gray-300">
+															{summary.last3TeamPicksShiftCount}
+														</span>
+													</div>
+													<div className="flex items-center justify-between">
+														<span className="text-xs text-gray-500">Major shifts</span>
+														<span className="text-xs text-gray-300">
+															{summary.majorShiftCount}
+														</span>
+													</div>
+													<div className="flex items-center justify-between">
+														<span className="text-xs text-gray-500">Top category</span>
+														<span className="text-xs text-gray-300">
+															{summary.topCategory ? SHIFT_CATEGORY_LABELS[summary.topCategory] : 'None'}
+														</span>
+													</div>
+												</div>
+											)}
 										</div>
 									)}
 
@@ -146,174 +180,182 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, latestPick
 						</Tooltip>
 					);
 				})}
-			</div>
+				</div>
 
-			{/* Draft grid rows */}
-			{Array.from({ length: NUM_ROUNDS }, (_, roundIdx) => {
-				const round = roundIdx + 1;
-				return (
-					<div
-						key={round}
-						className="grid gap-1 mb-1"
-						style={{ gridTemplateColumns: `64px repeat(${NUM_TEAMS}, minmax(0, 1fr))` }}
-					>
-						{/* Round label */}
-						<div className="flex items-center justify-center text-sm text-gray-600 font-mono">
-							R{round}
-						</div>
+				{/* Draft grid rows */}
+				{Array.from({ length: NUM_ROUNDS }, (_, roundIdx) => {
+					const round = roundIdx + 1;
+					return (
+						<div
+							key={round}
+							className="grid gap-1 mb-1"
+							style={{ gridTemplateColumns: `64px repeat(${NUM_TEAMS}, minmax(0, 1fr))` }}
+						>
+							{/* Round label */}
+							<div className="flex items-center justify-center text-sm text-gray-600 font-mono">
+								R{round}
+							</div>
 
-						{/* Team cells for this round */}
-						{Array.from({ length: NUM_TEAMS }, (_, teamIdx) => {
-							const pick = pickMap.get(`${round}-${teamIdx}`);
-							const onClock = isOnTheClock(round, teamIdx);
-							const isHumanCol = teamIdx === humanTeamIndex;
-							const pickShift = pick ? shiftMap.get(pick.pickNumber) : undefined;
+							{/* Team cells for this round */}
+							{Array.from({ length: NUM_TEAMS }, (_, teamIdx) => {
+								const pick = pickMap.get(`${round}-${teamIdx}`);
+								const onClock = isOnTheClock(round, teamIdx);
+								const isHumanCol = teamIdx === humanTeamIndex;
+								const pickShift = pick ? shiftMap.get(pick.pickNumber) : undefined;
 
-							if (pick) {
-								const colors = POSITION_COLORS[pick.position as Position];
-								const isLatest = pick.pickNumber === latestPickNumber;
+								if (pick) {
+									const colors = POSITION_COLORS[pick.position as Position];
+									const isLatest = pick.pickNumber === latestPickNumber;
 
-								const cellClasses = cn(
-									'relative rounded-md px-2 py-2 cursor-pointer transition-all duration-150',
-									'border',
-									colors.bg,
-									colors.border,
-									isHumanCol && 'ring-1 ring-cyan-500/20',
-									'hover:brightness-125 hover:scale-[1.02]',
-								);
+									const cellClasses = cn(
+										'relative rounded-md px-2 py-2 cursor-pointer transition-all duration-150',
+										'border',
+										colors.bg,
+										colors.border,
+										isHumanCol && 'ring-1 ring-cyan-500/20',
+										'hover:brightness-125 hover:scale-[1.02]',
+									);
 
-								const cellContent = (
-									<>
-										<div className={cn('text-sm font-semibold truncate', colors.text)}>
-											{pick.playerName}
-										</div>
-										<div className="flex items-center justify-between mt-0.5">
-											<span className={cn('text-xs font-mono', colors.text)}>
-												{pick.position}
-											</span>
-											<span className="text-xs text-gray-600">
-												#{pick.pickNumber}
-											</span>
-										</div>
-										{pickShift && (
-											<div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-yellow-500 text-black text-[10px] font-bold flex items-center justify-center">
-												!
+									const cellContent = (
+										<>
+											<div className={cn('text-sm font-semibold truncate', colors.text)}>
+												{pick.playerName}
 											</div>
-										)}
-									</>
-								);
-
-								return (
-									<Tooltip key={teamIdx} delayDuration={300}>
-										<TooltipTrigger asChild>
-											{isLatest ? (
-												<motion.div
-													initial={{ scale: 1.08, boxShadow: `0 0 16px ${getGlowColor(pick.position)}` }}
-													animate={{ scale: 1, boxShadow: '0 0 0px transparent' }}
-													transition={{ duration: 0.6, ease: 'easeOut' }}
-													className={cellClasses}
-												>
-													{cellContent}
-												</motion.div>
-											) : (
-												<div className={cellClasses}>
-													{cellContent}
-												</div>
-											)}
-										</TooltipTrigger>
-										<TooltipContent
-											side="top"
-											className="bg-gray-900 border border-gray-700 text-white max-w-xs p-3 pointer-events-auto"
-										>
-											{/* Player header */}
-											<div className="flex items-center gap-2 mb-2">
-												<span className={cn(
-													'text-xs font-mono px-1.5 py-0.5 rounded',
-													colors.bg, colors.text, colors.border, 'border',
-												)}>
+											<div className="flex items-center justify-between mt-0.5">
+												<span className={cn('text-xs font-mono', colors.text)}>
 													{pick.position}
 												</span>
-												<span className="text-sm font-semibold text-white">
-													{pick.playerName}
+												<span className="text-xs text-gray-600">
+													#{pick.pickNumber}
 												</span>
 											</div>
+											{pickShift && (
+												<div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-yellow-500 text-black text-[10px] font-bold flex items-center justify-center">
+													!
+												</div>
+											)}
+										</>
+									);
 
-											{/* Meta info */}
-											<div className="flex items-center gap-3 text-xs text-gray-400 mb-2">
-												<span>{TEAM_NAMES[pick.teamIndex]}</span>
-												<span>Pick #{pick.pickNumber}</span>
-												<span>R{pick.round}</span>
-											</div>
-
-											{/* Confidence - hidden for human picks */}
-											{pick.reasoning !== 'Human selection' && (
-												<div className="flex items-center gap-2 mb-2">
-													<span className="text-xs text-gray-500">Confidence:</span>
-													<div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-														<div
-															className={cn(
-																'h-full rounded-full transition-all',
-																pick.confidence >= 0.8 ? 'bg-green-500' :
-																pick.confidence >= 0.5 ? 'bg-yellow-500' : 'bg-red-500',
-															)}
-															style={{ width: `${Math.round(pick.confidence * 100)}%` }}
-														/>
+									return (
+										<Tooltip key={teamIdx} delayDuration={300}>
+											<TooltipTrigger asChild>
+												{isLatest ? (
+													<motion.div
+														initial={{ scale: 1.08, boxShadow: `0 0 16px ${getGlowColor(pick.position)}` }}
+														animate={{ scale: 1, boxShadow: '0 0 0px transparent' }}
+														transition={{ duration: 0.6, ease: 'easeOut' }}
+														className={cellClasses}
+													>
+														{cellContent}
+													</motion.div>
+												) : (
+													<div className={cellClasses}>
+														{cellContent}
 													</div>
-													<span className="text-xs text-gray-400">
-														{Math.round(pick.confidence * 100)}%
+												)}
+											</TooltipTrigger>
+											<TooltipContent
+												side="top"
+												className="bg-gray-900 border border-gray-700 text-white max-w-xs p-3 pointer-events-auto"
+											>
+												{/* Player header */}
+												<div className="flex items-center gap-2 mb-2">
+													<span className={cn(
+														'text-xs font-mono px-1.5 py-0.5 rounded',
+														colors.bg, colors.text, colors.border, 'border',
+													)}>
+														{pick.position}
+													</span>
+													<span className="text-sm font-semibold text-white">
+														{pick.playerName}
 													</span>
 												</div>
-											)}
 
-											{/* Reasoning - scrollable */}
-											<div className="text-xs text-gray-300 leading-relaxed max-h-32 overflow-y-auto prose prose-invert prose-xs max-w-none">
-												<Markdown>{pick.reasoning}</Markdown>
-											</div>
-
-											{/* Strategy shift badge */}
-											{pickShift && (
-												<div className="mt-2 p-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
-													<div className="text-xs text-yellow-400 font-semibold flex items-center gap-1">
-														<span>!</span>
-														<span>Strategy Shift</span>
-													</div>
-													<p className="text-xs text-yellow-300/70 mt-0.5 line-clamp-2">
-														{pickShift.trigger}
-													</p>
+												{/* Meta info */}
+												<div className="flex items-center gap-3 text-xs text-gray-400 mb-2">
+													<span>{TEAM_NAMES[pick.teamIndex]}</span>
+													<span>Pick #{pick.pickNumber}</span>
+													<span>R{pick.round}</span>
 												</div>
-											)}
-										</TooltipContent>
-									</Tooltip>
-								);
-							}
 
-							// Empty cell
-							return (
-								<div
-									key={teamIdx}
-									className={cn(
-										'rounded-md px-2 py-2 border transition-all duration-300',
-										onClock
-											? 'border-cyan-400/50 bg-cyan-500/10 animate-pulse'
-											: 'border-gray-800/50 bg-gray-900/30',
-										isHumanCol && !onClock && 'border-cyan-500/10 bg-cyan-500/5',
-									)}
-								>
-									{onClock ? (
-										<div className="text-xs text-cyan-400 font-medium text-center">
-											On Clock
-										</div>
-									) : (
-										<div className="text-xs text-gray-800 text-center">
-											--
-										</div>
-									)}
-								</div>
-							);
-						})}
-					</div>
-				);
-			})}
-		</div>
-	);
-}
+												{/* Confidence - hidden for human picks */}
+												{pick.reasoning !== 'Human selection' && (
+													<div className="flex items-center gap-2 mb-2">
+														<span className="text-xs text-gray-500">Confidence:</span>
+														<div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+															<div
+																className={cn(
+																	'h-full rounded-full transition-all',
+																	pick.confidence >= 0.8 ? 'bg-green-500' :
+																	pick.confidence >= 0.5 ? 'bg-yellow-500' : 'bg-red-500',
+																)}
+																style={{ width: `${Math.round(pick.confidence * 100)}%` }}
+															/>
+														</div>
+														<span className="text-xs text-gray-400">
+															{Math.round(pick.confidence * 100)}%
+														</span>
+													</div>
+												)}
+
+												{/* Reasoning - scrollable */}
+												<div className="text-xs text-gray-300 leading-relaxed max-h-32 overflow-y-auto prose prose-invert prose-xs max-w-none">
+													<Markdown>{pick.reasoning}</Markdown>
+												</div>
+
+												{/* Strategy shift badge */}
+												{pickShift && (
+													<div className="mt-2 p-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+														<div className="text-xs text-yellow-400 font-semibold flex items-center gap-1">
+															<span>!</span>
+															<span>Strategy Shift</span>
+														</div>
+														<div className="mt-1 flex items-center gap-1.5">
+															<Badge className="text-[10px] h-auto py-0 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
+																{SHIFT_CATEGORY_LABELS[pickShift.category]}
+															</Badge>
+															<Badge className="text-[10px] h-auto py-0 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
+																{pickShift.severity}
+															</Badge>
+														</div>
+														<p className="text-xs text-yellow-300/70 mt-0.5 line-clamp-2">
+															{pickShift.trigger}
+														</p>
+													</div>
+												)}
+											</TooltipContent>
+										</Tooltip>
+									);
+								}
+
+								// Empty cell
+								return (
+									<div
+										key={teamIdx}
+										className={cn(
+											'rounded-md px-2 py-2 border transition-all duration-300',
+											onClock
+												? 'border-cyan-400/50 bg-cyan-500/10 animate-pulse'
+												: 'border-gray-800/50 bg-gray-900/30',
+											isHumanCol && !onClock && 'border-cyan-500/10 bg-cyan-500/5',
+										)}
+									>
+										{onClock ? (
+											<div className="text-xs text-cyan-400 font-medium text-center">
+												On Clock
+											</div>
+										) : (
+											<div className="text-xs text-gray-800 text-center">
+												--
+											</div>
+										)}
+									</div>
+								);
+							})}
+						</div>
+					);
+				})}
+			</div>
+		);
+	}

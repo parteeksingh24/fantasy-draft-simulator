@@ -17,9 +17,10 @@ interface ThinkingPanelProps {
 	streamTeamIndex?: number;
 	toolCalls?: ToolCallRecord[];
 	boardContext?: BoardContext | null;
+	streamError?: string | null;
 }
 
-export function ThinkingPanel({ personas, isStreaming, streamTokens, streamPersona, streamModel, streamTeamIndex, toolCalls, boardContext }: ThinkingPanelProps) {
+export function ThinkingPanel({ personas, isStreaming, streamTokens, streamPersona, streamModel, streamTeamIndex, toolCalls, boardContext, streamError }: ThinkingPanelProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -112,8 +113,15 @@ export function ThinkingPanel({ personas, isStreaming, streamTokens, streamPerso
 					<div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0">
 						<div className="text-sm text-gray-400 leading-relaxed prose prose-invert prose-sm max-w-none">
 							<Markdown>{streamTokens ?? ''}</Markdown>
-							<span className="inline-block w-1.5 h-3 bg-cyan-400 animate-pulse ml-0.5 align-middle" />
+							{isStreaming && (
+								<span className="inline-block w-1.5 h-3 bg-cyan-400 animate-pulse ml-0.5 align-middle" />
+							)}
 						</div>
+						{streamError && (
+							<div className="mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+								{streamError}. Retrying...
+							</div>
+						)}
 					</div>
 				</div>
 			</CardContent>

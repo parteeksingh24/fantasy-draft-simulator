@@ -10,7 +10,7 @@ export const RosterSlotSchema = s.enum(ROSTER_SLOTS);
 export type Position = s.infer<typeof PositionSchema>;
 export type RosterSlot = s.infer<typeof RosterSlotSchema>;
 
-// Player data (from Sleeper API, stored in Vector)
+// Player data (from Sleeper API, stored in KV)
 export const PlayerSchema = s.object({
 	playerId: s.string().describe('Unique player identifier from Sleeper'),
 	name: s.string().describe('Full player name'),
@@ -23,18 +23,6 @@ export const PlayerSchema = s.object({
 });
 
 export type Player = s.infer<typeof PlayerSchema>;
-
-// Player metadata for Vector storage
-export interface PlayerMetadata extends Record<string, unknown> {
-	playerId: string;
-	name: string;
-	position: Position;
-	team: string;
-	rank: number;
-	tier: number;
-	age: number;
-	byeWeek: number;
-}
 
 // Draft pick record
 export const PickSchema = s.object({
@@ -49,6 +37,41 @@ export const PickSchema = s.object({
 });
 
 export type Pick = s.infer<typeof PickSchema>;
+
+export type ShiftCategory =
+	| 'strategy-break'
+	| 'value-deviation'
+	| 'trend-follow'
+	| 'trend-fade'
+	| 'positional-pivot';
+
+export type ShiftSeverity = 'minor' | 'major';
+
+export interface PersonaShiftDetection {
+	trigger: string;
+	category: ShiftCategory;
+	severity: ShiftSeverity;
+}
+
+export interface StrategyShift {
+	pickNumber: number;
+	teamIndex: number;
+	persona: string;
+	trigger: string;
+	reasoning: string;
+	playerPicked: string;
+	position: Position;
+	category: ShiftCategory;
+	severity: ShiftSeverity;
+}
+
+export interface TeamShiftSummary {
+	teamIndex: number;
+	totalShifts: number;
+	last3TeamPicksShiftCount: number;
+	majorShiftCount: number;
+	topCategory: ShiftCategory | null;
+}
 
 // Team roster tracking
 export const RosterSchema = s.object({
@@ -96,14 +119,45 @@ export type BoardState = s.infer<typeof BoardStateSchema>;
 export const KV_DRAFT_STATE = 'draft-state';
 export const KV_TEAM_ROSTERS = 'team-rosters';
 export const KV_AGENT_STRATEGIES = 'agent-strategies';
+export const KV_SCOUTING_NOTES = 'team-scouting-notes';
+export const KV_PICK_REASONING = 'pick-reasoning';
 
 // KV key constants
 export const KEY_BOARD_STATE = 'board';
 export const KEY_AVAILABLE_PLAYERS = 'available-players';
 export const KEY_SETTINGS = 'settings';
 
-// Vector namespace
-export const VECTOR_PLAYERS = 'players';
+// Scouting notes constants
+export const MAX_NOTES_PER_TEAM = 10;
+export const MAX_NOTE_LENGTH = 300;
+
+// Scouting note written by a drafter agent
+export interface ScoutingNote {
+	id: string;
+	round: number;
+	pickNumber: number;
+	text: string;
+	tags: string[];
+	timestamp: number;
+	type?: 'general' | 'shift';
+}
+
+// Structured reasoning summary for a pick (stored in KV for fast tool reads)
+export interface ReasoningSummary {
+	pickNumber: number;
+	teamIndex: number;
+	persona: string;
+	model: string;
+	playerId: string;
+	playerName: string;
+	position: string;
+	summary: string;
+	toolsUsed: string[];
+	confidence: number;
+	timestamp: number;
+	streamId?: string;
+	streamUrl?: string;
+}
 
 // Draft constants
 export const NUM_TEAMS = 12;

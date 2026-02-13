@@ -3,7 +3,7 @@ import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '.
 import { anthropic } from '@ai-sdk/anthropic';
 
 export default createAgent('drafter-balanced', {
-	description: 'AI drafter agent with a balanced Best Player Available strategy. Queries vector storage for player context and uses an LLM to make structured draft picks.',
+	description: 'AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.',
 	schema: {
 		input: DrafterInputSchema,
 		output: DrafterOutputSchema,

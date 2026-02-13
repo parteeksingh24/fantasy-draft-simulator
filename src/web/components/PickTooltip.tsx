@@ -1,6 +1,6 @@
 import { cn } from '../lib/utils';
 import type { Pick, Position, StrategyShift } from '../lib/types';
-import { POSITION_COLORS, TEAM_NAMES } from '../lib/types';
+import { POSITION_COLORS, TEAM_NAMES, SHIFT_CATEGORY_LABELS } from '../lib/types';
 
 interface PickTooltipProps {
 	pick: Pick;
@@ -68,17 +68,20 @@ export function PickTooltip({ pick, shift, position }: PickTooltipProps) {
 				</p>
 
 				{/* Strategy shift badge */}
-				{shift && (
-					<div className="mt-2 p-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
-						<div className="text-[10px] text-yellow-400 font-semibold flex items-center gap-1">
-							<span>!</span>
-							<span>Strategy Shift</span>
+					{shift && (
+						<div className="mt-2 p-1.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+							<div className="text-[10px] text-yellow-400 font-semibold flex items-center gap-1">
+								<span>!</span>
+								<span>Strategy Shift</span>
+							</div>
+							<div className="mt-0.5 text-[10px] text-yellow-300/80">
+								{SHIFT_CATEGORY_LABELS[shift.category]} • {shift.severity}
+							</div>
+							<p className="text-[10px] text-yellow-300/70 mt-0.5 line-clamp-2">
+								{shift.trigger}
+							</p>
 						</div>
-						<p className="text-[10px] text-yellow-300/70 mt-0.5 line-clamp-2">
-							{shift.trigger}
-						</p>
-					</div>
-				)}
+					)}
 			</div>
 		</div>
 	);

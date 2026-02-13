@@ -1,4 +1,4 @@
-import type { Pick, Player } from './types';
+import type { Pick, Player, PersonaShiftDetection } from './types';
 
 // --- Detection result types ---
 const POSITION_RUN_WINDOW = 8;
@@ -157,21 +157,11 @@ export function analyzeBoardState(
 
 // --- Behavior-based strategy shift detection ---
 
-export interface StrategyShift {
-	pickNumber: number;
-	teamIndex: number;
-	persona: string;
-	trigger: string;
-	reasoning: string;
-	playerPicked: string;
-	position: string;
-}
-
 /**
  * Detect whether a pick represents a strategy shift based on the persona's
  * expected behavior. This replaces brittle keyword matching in LLM reasoning.
  *
- * Returns a shift description string if the pick deviates from persona norms,
+ * Returns structured shift metadata if the pick deviates from persona norms,
  * or null if the pick is consistent with the persona.
  */
 export function detectPersonaShift(
@@ -179,7 +169,7 @@ export function detectPersonaShift(
 	pick: Pick,
 	boardAnalysis: BoardAnalysis,
 	availablePlayers: Player[],
-): string | null {
+): PersonaShiftDetection | null {
 	const { position } = pick;
 	const round = pick.round;
 	const pickedPlayer = availablePlayers.find((p) => p.playerId === pick.playerId);
@@ -190,7 +180,11 @@ export function detectPersonaShift(
 		case 'drafter-balanced': {
 			// Balanced should not make extreme reaches or pass obvious value
 			if (pickedReach !== null && pickedReach >= 14) {
-				return `Balanced persona made an aggressive reach for ${pick.playerName} (${pickedReach} spots ahead of rank), deviating from BPA principles.`;
+				return {
+					trigger: `Balanced persona made an aggressive reach for ${pick.playerName} (${pickedReach} spots ahead of rank), deviating from BPA principles.`,
+					category: 'value-deviation',
+					severity: 'major',
+				};
 			}
 
 			const topDrop = boardAnalysis.valueDrops[0];
@@ -201,7 +195,11 @@ export function detectPersonaShift(
 				&& pickedValue !== null
 				&& pickedValue <= 0
 			) {
-				return `Balanced persona passed on a major value drop (${topDrop.player.name}, +${topDrop.adpDiff}) to draft ${pick.playerName} with neutral/negative value.`;
+				return {
+					trigger: `Balanced persona passed on a major value drop (${topDrop.player.name}, +${topDrop.adpDiff}) to draft ${pick.playerName} with neutral/negative value.`,
+					category: 'value-deviation',
+					severity: 'major',
+				};
 			}
 			break;
 		}
@@ -209,7 +207,11 @@ export function detectPersonaShift(
 		case 'drafter-bold':
 			// Bold should lean into upside over conservative veteran picks
 			if (pickedPlayer && round <= 3 && pickedPlayer.age >= 29 && (pickedValue ?? 0) < 8) {
-				return `Bold persona drafted older, safer profile ${pick.playerName} (age ${pickedPlayer.age}) without a major value discount.`;
+				return {
+					trigger: `Bold persona drafted older, safer profile ${pick.playerName} (age ${pickedPlayer.age}) without a major value discount.`,
+					category: 'strategy-break',
+					severity: 'minor',
+				};
 			}
 			break;
 
@@ -218,7 +220,11 @@ export function detectPersonaShift(
 			if (position !== 'QB' && round <= 2) {
 				const eliteQBs = availablePlayers.filter((p) => p.position === 'QB' && p.rank <= 18);
 				if (eliteQBs.length > 0) {
-					return `Stack-builder persona passed on elite QB options to draft ${pick.playerName} (${position}) in round ${round}, delaying stack setup.`;
+					return {
+						trigger: `Stack-builder persona passed on elite QB options to draft ${pick.playerName} (${position}) in round ${round}, delaying stack setup.`,
+						category: 'positional-pivot',
+						severity: 'major',
+					};
 				}
 			}
 			break;
@@ -227,7 +233,11 @@ export function detectPersonaShift(
 		case 'drafter-zero-rb':
 			// Zero-RB should avoid RBs in rounds 1-3
 			if (position === 'RB' && round <= 3) {
-				return `Zero-RB persona drafted an RB (${pick.playerName}) in round ${round}, breaking their core strategy.`;
+				return {
+					trigger: `Zero-RB persona drafted an RB (${pick.playerName}) in round ${round}, breaking their core strategy.`,
+					category: 'strategy-break',
+					severity: 'major',
+				};
 			}
 			break;
 
@@ -236,7 +246,11 @@ export function detectPersonaShift(
 			if (position !== 'QB' && round <= 2) {
 				const qbsAvailable = availablePlayers.filter((p) => p.position === 'QB');
 				if (qbsAvailable.length > 0) {
-					return `QB-first persona passed on available QBs to draft ${pick.playerName} (${position}) in round ${round}.`;
+					return {
+						trigger: `QB-first persona passed on available QBs to draft ${pick.playerName} (${position}) in round ${round}.`,
+						category: 'strategy-break',
+						severity: 'major',
+					};
 				}
 			}
 			break;
@@ -244,7 +258,11 @@ export function detectPersonaShift(
 		case 'drafter-stud-rb':
 			// Stud-RB should draft RBs in round 1
 			if (position !== 'RB' && round === 1) {
-				return `Stud-RB persona drafted a ${position} (${pick.playerName}) instead of an RB in round 1.`;
+				return {
+					trigger: `Stud-RB persona drafted a ${position} (${pick.playerName}) instead of an RB in round 1.`,
+					category: 'strategy-break',
+					severity: 'major',
+				};
 			}
 			break;
 
@@ -253,7 +271,11 @@ export function detectPersonaShift(
 			if (position !== 'TE' && round <= 2) {
 				const eliteTEs = availablePlayers.filter((p) => p.position === 'TE' && p.tier <= 2);
 				if (eliteTEs.length > 0) {
-					return `TE-premium persona passed on elite TEs to draft ${pick.playerName} (${position}) in round ${round}.`;
+					return {
+						trigger: `TE-premium persona passed on elite TEs to draft ${pick.playerName} (${position}) in round ${round}.`,
+						category: 'strategy-break',
+						severity: 'major',
+					};
 				}
 			}
 			break;
@@ -265,7 +287,11 @@ export function detectPersonaShift(
 			);
 			const joinedRun = activeRuns.find((r) => r.position === position);
 			if (joinedRun) {
-				return `Contrarian joined a ${position} run (${joinedRun.count} of last ${joinedRun.window} picks) instead of going against the grain.`;
+				return {
+					trigger: `Contrarian joined a ${position} run (${joinedRun.count} of last ${joinedRun.window} picks) instead of going against the grain.`,
+					category: 'trend-follow',
+					severity: 'major',
+				};
 			}
 			break;
 		}
@@ -273,7 +299,11 @@ export function detectPersonaShift(
 		case 'drafter-youth-movement': {
 			// Youth movement should avoid old players
 			if (pickedPlayer && pickedPlayer.age >= 28) {
-				return `Youth-movement persona drafted ${pick.playerName} (age ${pickedPlayer.age}), breaking their preference for young players.`;
+				return {
+					trigger: `Youth-movement persona drafted ${pick.playerName} (age ${pickedPlayer.age}), breaking their preference for young players.`,
+					category: 'strategy-break',
+					severity: 'major',
+				};
 			}
 			break;
 		}
@@ -283,7 +313,11 @@ export function detectPersonaShift(
 			if (pickedPlayer) {
 				const reach = pickedPlayer.rank - pick.pickNumber;
 				if (reach > 10) {
-					return `Risk-averse persona reached for ${pick.playerName} (Rank ${pickedPlayer.rank} at pick ${pick.pickNumber}, a ${reach}-spot reach).`;
+					return {
+						trigger: `Risk-averse persona reached for ${pick.playerName} (Rank ${pickedPlayer.rank} at pick ${pick.pickNumber}, a ${reach}-spot reach).`,
+						category: 'value-deviation',
+						severity: 'major',
+					};
 				}
 			}
 			break;
@@ -294,7 +328,11 @@ export function detectPersonaShift(
 			if (pickedPlayer) {
 				const value = pick.pickNumber - pickedPlayer.rank;
 				if (value < -5) {
-					return `Value-hunter reached for ${pick.playerName} (Rank ${pickedPlayer.rank} at pick ${pick.pickNumber}, negative value).`;
+					return {
+						trigger: `Value-hunter reached for ${pick.playerName} (Rank ${pickedPlayer.rank} at pick ${pick.pickNumber}, negative value).`,
+						category: 'value-deviation',
+						severity: 'major',
+					};
 				}
 			}
 			break;
@@ -316,7 +354,11 @@ export function detectPersonaShift(
 
 			// If there's a dominant position run but they picked a different position
 			if (hasDominantRun && dominantRun.position !== position) {
-				return `Reactive persona ignored a dominant ${dominantRun.position} run (${dominantRun.count} of last ${dominantRun.window} picks) and drafted ${pick.playerName} (${position}).`;
+				return {
+					trigger: `Reactive persona ignored a dominant ${dominantRun.position} run (${dominantRun.count} of last ${dominantRun.window} picks) and drafted ${pick.playerName} (${position}).`,
+					category: 'trend-fade',
+					severity: 'major',
+				};
 			}
 
 			// If there's a major value drop but they picked someone with clearly less value
@@ -325,7 +367,11 @@ export function detectPersonaShift(
 				if (!pickedTheDrop) {
 					const pickedIsCloseValue = pickedValue !== null && pickedValue >= topDrop.adpDiff - 6;
 					if (pickedIsCloseValue) break;
-					return `Reactive persona passed on ${topDrop.player.name} (${topDrop.player.position}, fallen ${topDrop.adpDiff} spots) to draft ${pick.playerName} instead.`;
+					return {
+						trigger: `Reactive persona passed on ${topDrop.player.name} (${topDrop.player.position}, fallen ${topDrop.adpDiff} spots) to draft ${pick.playerName} instead.`,
+						category: 'value-deviation',
+						severity: 'major',
+					};
 				}
 			}
 
@@ -333,7 +379,11 @@ export function detectPersonaShift(
 			if (!hasDominantRun && !hasMajorDrop && urgentScarcity.length > 0) {
 				const scarcePositions = urgentScarcity.map((s) => s.position);
 				if (!scarcePositions.includes(position)) {
-					return `Reactive persona ignored scarcity alerts at ${scarcePositions.join(', ')} and drafted ${pick.playerName} (${position}).`;
+					return {
+						trigger: `Reactive persona ignored scarcity alerts at ${scarcePositions.join(', ')} and drafted ${pick.playerName} (${position}).`,
+						category: 'trend-fade',
+						severity: 'major',
+					};
 				}
 			}
 			break;

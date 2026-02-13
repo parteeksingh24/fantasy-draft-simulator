@@ -35,25 +35,25 @@ Built on [Agentuity](https://agentuity.dev). Each agent uses a different LLM, ca
                                 │
                     ┌───────────┴───────────┐
                     │                       │
-             ┌──────▼──────┐        ┌───────▼──────┐
-             │  KV Storage │        │ Vector Store │
-             │  (state,    │        │ (semantic    │
-             │   rosters)  │        │  player      │
-             └─────────────┘        │  search)     │
-                                    └──────────────┘
+             ┌──────▼──────┐      ┌─────────▼────────┐
+             │  KV Storage │      │  Durable Streams  │
+             │  (state,    │      │  (pick reasoning  │
+             │   rosters,  │      │   replay)         │
+             │   notes)    │      └──────────────────┘
+             └─────────────┘
 ```
 
 The **commissioner** manages snake draft ordering, pick validation, and roster enforcement without any LLM calls. Each **drafter agent** receives board state, uses tools to research available players, then returns a structured pick via `generateText` or `streamText`. The frontend consumes the SSE stream to show the agent's reasoning, tool calls, and final pick in real time.
 
 ## Agentuity Platform Features
 
-This project uses six Agentuity platform capabilities. Here is how each one is wired up.
+This project uses seven Agentuity platform capabilities. Here is how each one is wired up.
 
 | Feature | What It Does Here | Source File |
 |---------|-------------------|-------------|
 | Agent orchestration | Commissioner calls persona-specific drafter agents via `agent.run()` | `src/agent/commissioner/index.ts` |
-| KV Storage | Board state, rosters, persona assignments, strategy shifts | `src/lib/seed-players.ts`, `src/agent/commissioner/index.ts` |
-| Vector Storage | Semantic player search ("elite young wide receiver") with embedded metadata | `src/lib/drafter-tools.ts` |
+| KV Storage | Board state, rosters, persona assignments, strategy shifts, scouting notes, reasoning summaries | `src/lib/seed-players.ts`, `src/agent/commissioner/index.ts`, `src/lib/drafter-tools.ts` |
+| Durable Streams | Each AI pick's full thinking process recorded as NDJSON for replay | `src/api/index.ts` |
 | SSE streaming | `sse()` helper streams thinking tokens, tool calls, and picks to the frontend | `src/api/index.ts` |
 | AI Gateway | Each persona routes to a different LLM provider through Agentuity's gateway | `src/lib/drafter-models.ts` |
 | Hono router | `createRouter()` from `@agentuity/runtime` defines all API routes | `src/api/index.ts` |
@@ -66,21 +66,26 @@ const drafterAgent = DRAFTER_AGENTS[personaName] ?? drafterBalanced;
 const drafterResult = await drafterAgent.run(drafterInput);
 ```
 
-**KV Storage.** Draft state, rosters, and persona assignments are persisted across requests in three KV namespaces. The seed pipeline writes the player list to KV as the source of truth for availability:
+**KV Storage.** Draft state, rosters, persona assignments, scouting notes, and reasoning summaries are persisted across requests in five KV namespaces. Agents write their own scouting notes and read each other's reasoning summaries:
 
 ```typescript
-// src/lib/seed-players.ts
-await kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null });
+// src/lib/drafter-tools.ts - agents write their own scouting notes
+await deps.kv.set(KV_SCOUTING_NOTES, `team-${deps.teamIndex}`, trimmed, { ttl: null });
+
+// src/api/index.ts - structured reasoning summaries for fast agent reads
+await c.var.kv.set(KV_PICK_REASONING, `pick-${pickNumber}`, reasoningSummary, { ttl: null });
 ```
 
-**Vector Storage.** The `searchPlayers` tool runs semantic queries against embedded player documents so agents can search by natural language ("safe veteran quarterback") instead of exact filters:
+**Durable Streams.** Each AI pick's thinking process is recorded to a durable stream as NDJSON (thinking tokens, tool calls, tool results, final summary). The stream URL is included in the SSE pick event for frontend replay:
 
 ```typescript
-// src/lib/drafter-tools.ts
-const results = await deps.vector.search<PlayerMetadata>(VECTOR_PLAYERS, {
-  query,
-  limit: normalizedLimit,
+// src/api/index.ts
+const durableStream = await c.var.stream.create('pick-reasoning', {
+  contentType: 'application/x-ndjson',
+  metadata: { pickNumber: String(pickNumber), persona: personaName },
+  ttl: null,
 });
+await durableStream.write({ type: 'thinking', text: part.text, ts: Date.now() });
 ```
 
 **SSE streaming.** The `/draft/advance/stream` endpoint uses the `sse()` helper from `@agentuity/runtime` to stream events as the AI thinks:
@@ -109,7 +114,7 @@ export const DRAFTER_MODELS: Record<string, LanguageModel> = {
 };
 ```
 
-**Hono router.** API routes are defined with `createRouter()` from `@agentuity/runtime`, which provides a Hono-compatible router with built-in access to `c.var.kv`, `c.var.vector`, and `c.var.logger`:
+**Hono router.** API routes are defined with `createRouter()` from `@agentuity/runtime`, which provides a Hono-compatible router with built-in access to `c.var.kv`, `c.var.stream`, and `c.var.logger`:
 
 ```typescript
 // src/api/index.ts
@@ -117,7 +122,7 @@ import { createRouter, sse } from '@agentuity/runtime';
 const api = createRouter();
 
 api.post('/draft/start', async (c) => {
-  await ensureSeeded(c.var.kv, c.var.vector, c.var.logger);
+  await ensureSeeded(c.var.kv, c.var.logger);
   const result = await commissioner.run({ action: 'start', humanTeamIndex });
   return c.json(result);
 });
@@ -146,31 +151,47 @@ Most personas use `structured_with_tools` generation (structured output + tool c
 
 ## Agent Tools
 
-Agents choose which tools to call autonomously. Each agent has a step budget of 4 via `stopWhen: stepCountIs(4)`.
+Agents choose which tools to call autonomously. Each agent has a step budget of 5 via `stopWhen: stepCountIs(5)`. The tool surface is intentionally small: 4 reads, 1 write.
 
 | Tool | Description | Inputs |
 |------|-------------|--------|
-| `searchPlayers` | Semantic search via Vector storage. Finds players matching natural language queries. Falls back to rank-based results if Vector is unavailable. | `query` (string), `position?` (QB/RB/WR/TE), `limit?` (default 10) |
-| `getTopAvailable` | Returns top available players sorted by rank. The go-to tool for seeing who's on the board. | `position?` (QB/RB/WR/TE), `limit?` (default 15) |
+| `getTopAvailable` | Returns top available players sorted by rank, filtered by roster eligibility. | `position?` (QB/RB/WR/TE), `limit?` (default 15) |
 | `analyzeBoardTrends` | Detects position runs, value drops, and scarcity alerts from recent draft activity. | (none) |
-| `getTeamRoster` | Returns any team's current roster and open slots. Useful for predicting opponent picks. | `teamIndex` (0-11) |
+| `getTeamRoster` | Returns any team's current roster and open slots. | `teamIndex` (0-11) |
+| `getDraftIntel` | Merged read: own scouting notes + recent pick reasoning + optional server synthesis. | `noteLimit?` (default 5, max 10) |
+| `writeScoutingNote` | Saves an observation for future rounds. Agent-owned KV writes, FIFO capped at 10. | `note` (string), `tags?` (string[]) |
 
-Example tool definition from `src/lib/drafter-tools.ts`:
+### How agents use the tools
+
+1. **`getTopAvailable`** - "Who's still on the board?" Returns a ranked list of available players, optionally filtered by position. Also checks what roster slots the team still needs to fill so it doesn't suggest a QB when they already have one.
+
+2. **`analyzeBoardTrends`** - "What's happening around me?" Looks at recent picks to spot patterns: "3 RBs just went in a row" (position run), "this elite WR fell way past his ADP" (value drop), "only 2 TEs left in the top tier" (scarcity alert). Helps the agent react to what other teams are doing.
+
+3. **`getTeamRoster`** - "What does Team X have?" Peek at any team's roster. Useful for understanding rivals: "Team 3 still needs a QB, they'll probably grab one soon."
+
+4. **`getDraftIntel`** - "Give me everything I wrote down + what others were thinking." One call, three things back: `yourNotes` (the agent's own scouting notes from earlier picks, up to 10), `recentReasoning` (why the last 3 teams made their picks, from KV-stored summaries), and an optional `intelSummary` (short server-generated synthesis of the above).
+
+5. **`writeScoutingNote`** - "I want to remember this." Saves a private note to KV, like "Keep an eye on Kelce if he falls to round 3" or "Team 7 is stacking RBs hard." Tagged and capped at 10 notes per team (FIFO).
+
+A typical pick sequence: `getTeamRoster` (what do I need?) -> `getDraftIntel` (what do I know?) -> `analyzeBoardTrends` (what's happening?) -> `getTopAvailable` (who's left?) -> `writeScoutingNote` (remember this for later).
+
+### Example tool definition
+
+From `src/lib/drafter-tools.ts`:
 
 ```typescript
-searchPlayers: tool({
+writeScoutingNote: tool({
   description:
-    'Semantic search for players via Vector storage. Use this to find players '
-    + 'matching a natural language query (e.g. "elite young wide receiver").',
+    'Save an observation for future rounds. Use this when you notice something '
+    + 'worth remembering (e.g. a position run forming, a rival team\'s strategy).',
   inputSchema: z.object({
-    query: z.string().describe('Natural language search query'),
-    position: z.enum(['QB', 'RB', 'WR', 'TE']).optional(),
-    limit: z.number().optional().default(10),
+    note: z.string().describe('Your observation (max 300 characters)'),
+    tags: z.array(z.string()).optional(),
   }),
-  execute: async ({ query, position, limit }) => {
-    const results = await deps.vector.search(VECTOR_PLAYERS, { query, limit });
-    // Filter to available players, apply position filter, check roster eligibility
-    return { status: 'ok', query, results: players, source: 'vector' };
+  execute: async ({ note, tags }) => {
+    // Appends to bounded array in KV (max 10 notes, FIFO truncation)
+    await deps.kv.set(KV_SCOUTING_NOTES, `team-${deps.teamIndex}`, trimmed, { ttl: null });
+    return { status: 'ok', noteCount: trimmed.length };
   },
 }),
 ```
@@ -210,7 +231,7 @@ The `GET /draft/advance/stream` endpoint uses Server-Sent Events to stream the A
 | `tool-call` | Agent called a tool (name, args) |
 | `tool-result` | Tool returned results (truncated to 5 items for large arrays) |
 | `strategy-shift` | Pick contradicted the persona's expected behavior |
-| `pick` | Final pick with updated board state and rosters |
+| `pick` | Final pick with updated board state, rosters, and durable stream info |
 | `done` | Stream complete |
 | `error` | Something went wrong |
 
@@ -253,10 +274,10 @@ src/
 │   ├── drafter-models.ts           # Persona-to-model mapping, system prompts
 │   ├── drafter-capabilities.ts     # Generation mode per persona
 │   ├── drafter-common.ts           # Shared handler factory, schemas, prompt builders
-│   ├── drafter-tools.ts            # 4 AI SDK tools for player research
+│   ├── drafter-tools.ts            # 5 AI SDK tools for player research + collaboration
 │   ├── board-analysis.ts           # Position runs, value drops, scarcity, shift detection
 │   ├── record-pick.ts              # Pick recording, roster updates, shift detection
-│   ├── seed-players.ts             # Sleeper API fetch, KV + Vector seeding
+│   ├── seed-players.ts             # Sleeper API fetch, KV seeding
 │   └── persona-assignment.ts       # Weighted random persona assignment
 └── web/
     ├── App.tsx                     # Main app layout
@@ -302,7 +323,7 @@ Open `http://localhost:3500`, pick your draft position, and start the draft.
 | Method | Route | Description |
 |--------|-------|-------------|
 | GET | `/health` | Health check |
-| POST | `/draft/seed` | Seed player data into KV + Vector. Skips if already seeded. |
+| POST | `/draft/seed` | Seed player data into KV. Skips if already seeded. |
 | POST | `/draft/start` | Initialize a new draft. Seeds data, resets state, assigns personas. |
 | GET | `/draft/board` | Get current board state, rosters, and available player count. |
 | POST | `/draft/pick` | Human makes a pick. Body: `{ "playerId": "..." }` |
@@ -322,12 +343,14 @@ Open `http://localhost:3500`, pick your draft position, and start the draft.
 | `team-rosters` | `team-{0..11}` | Per-team roster (QB, RB, WR, TE, SUPERFLEX slots) |
 | `agent-strategies` | `persona-assignments` | Which persona is assigned to each team |
 | `agent-strategies` | `strategy-shifts` | Detected strategy shift events |
+| `team-scouting-notes` | `team-{0..11}` | Agent-written scouting notes (max 10 per team, FIFO) |
+| `pick-reasoning` | `pick-{1..60}` | Structured reasoning summaries for each AI pick |
 
-### Vector Namespace
+### Durable Streams
 
 | Namespace | Content |
 |-----------|---------|
-| `players` | 150 NFL players embedded with metadata (name, position, team, rank, tier, age, bye week) for semantic search |
+| `pick-reasoning` | NDJSON stream per AI pick: thinking tokens, tool calls/results, final pick summary. Permanent TTL. Used for UI replay. |
 
 ## Data Source
 
@@ -339,7 +362,7 @@ https://api.sleeper.app/v1/players/nfl
 
 The seed pipeline fetches the full player database (~5MB JSON), filters to the top 150 by `search_rank`, keeps only QB/RB/WR/TE positions, and maps each player to a structured format with rank, tier, age, and bye week.
 
-Players are stored in **KV** (availability source of truth, fast reads) and **Vector** (semantic search for the `searchPlayers` tool, seeded in the background).
+Players are stored in **KV** as the availability source of truth.
 
 ## Drafter Agent Pattern
 

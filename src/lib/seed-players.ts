@@ -1,10 +1,8 @@
 import type { KeyValueStorage } from '@agentuity/core';
-import type { VectorStorage } from '@agentuity/core';
 import {
 	type Player,
 	KV_DRAFT_STATE,
 	KEY_AVAILABLE_PLAYERS,
-	VECTOR_PLAYERS,
 } from './types';
 
 // Sleeper API types
@@ -159,48 +157,14 @@ function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer): Player {
 }
 
 /**
- * Seed Vector storage in batches (embedding is slow).
- * Runs in the background; callers should fire-and-forget.
- */
-async function seedVector(vector: VectorStorage, players: Player[]): Promise<void> {
-	const BATCH_SIZE = 30;
-	const vectorDocs = players.map((player) => ({
-		key: player.playerId,
-		document: `${player.name}, ${player.position} for ${player.team}. Age ${player.age}, Rank ${player.rank}, Tier ${player.tier}. Bye week ${player.byeWeek}.`,
-		metadata: {
-			playerId: player.playerId,
-			name: player.name,
-			position: player.position,
-			team: player.team,
-			rank: player.rank,
-			tier: player.tier,
-			age: player.age,
-			byeWeek: player.byeWeek,
-		},
-		ttl: null as null,
-	}));
-
-	// Batch into smaller chunks to avoid timeouts
-	for (let i = 0; i < vectorDocs.length; i += BATCH_SIZE) {
-		const batch = vectorDocs.slice(i, i + BATCH_SIZE);
-		await vector.upsert(VECTOR_PLAYERS, ...batch);
-	}
-}
-
-/**
- * Seed players into KV and Vector storage.
+ * Seed players into KV storage.
  *
  * KV stores the available player list (source of truth for availability).
- * Vector stores each player as an embedded document for semantic search.
- * Vector seeding runs in the background (fire-and-forget) because it requires
- * embedding 150 documents and is only needed when agents use the searchPlayers
- * tool. Agents fall back to getTopAvailable (KV-based) if Vector isn't ready.
  *
  * @param kv - KeyValue storage interface
- * @param vector - Vector storage interface
  * @returns Array of seeded players
  */
-export async function seedPlayers(kv: KeyValueStorage, vector: VectorStorage): Promise<Player[]> {
+export async function seedPlayers(kv: KeyValueStorage): Promise<Player[]> {
 	// Fetch players from Sleeper API
 	const sleeperPlayers = await fetchSleeperPlayers();
 
@@ -213,10 +177,6 @@ export async function seedPlayers(kv: KeyValueStorage, vector: VectorStorage): P
 
 	// Store available player list in KV (primary source of truth, fast)
 	await kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null });
-
-	// Seed Vector storage in the background (slow - embedding 150 docs).
-	// AI agents have getTopAvailable (KV) as a fallback if Vector isn't ready yet.
-	seedVector(vector, players).catch(() => {});
 
 	return players;
 }

@@ -14,9 +14,13 @@ import {
 	type BoardState,
 	type Player,
 	type Roster,
+	type ReasoningSummary,
+	type StrategyShift,
+	type TeamShiftSummary,
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
+	KV_PICK_REASONING,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
 	NUM_TEAMS,
@@ -37,6 +41,62 @@ function summarizeToolResult(toolName: string, result: unknown): unknown {
 	return result;
 }
 
+function normalizeShift(shift: Partial<StrategyShift>): StrategyShift {
+	return {
+		pickNumber: shift.pickNumber ?? 0,
+		teamIndex: shift.teamIndex ?? 0,
+		persona: shift.persona ?? 'drafter-balanced',
+		trigger: shift.trigger ?? 'Strategy shift detected.',
+		reasoning: shift.reasoning ?? '',
+		playerPicked: shift.playerPicked ?? 'Unknown',
+		position: (shift.position ?? 'QB') as StrategyShift['position'],
+		category: shift.category ?? 'positional-pivot',
+		severity: shift.severity ?? 'minor',
+	};
+}
+
+function buildTeamShiftSummary(shifts: StrategyShift[], picks: BoardState['picks']): TeamShiftSummary[] {
+	return Array.from({ length: NUM_TEAMS }, (_, teamIndex) => {
+		const teamShifts = shifts.filter((shift) => shift.teamIndex === teamIndex);
+		const totalShifts = teamShifts.length;
+		const majorShiftCount = teamShifts.filter((shift) => shift.severity === 'major').length;
+
+		const categoryCounts = new Map<StrategyShift['category'], number>();
+		for (const shift of teamShifts) {
+			categoryCounts.set(shift.category, (categoryCounts.get(shift.category) ?? 0) + 1);
+		}
+
+		let topCategory: StrategyShift['category'] | null = null;
+		let topCount = 0;
+		for (const [category, count] of categoryCounts.entries()) {
+			if (count > topCount || (count === topCount && topCategory !== null && category < topCategory)) {
+				topCategory = category;
+				topCount = count;
+			} else if (topCategory === null) {
+				topCategory = category;
+				topCount = count;
+			}
+		}
+
+		const last3TeamPickNumbers = picks
+			.filter((pick) => pick.teamIndex === teamIndex)
+			.slice(-3)
+			.map((pick) => pick.pickNumber);
+		const teamShiftPickNumbers = new Set(teamShifts.map((shift) => shift.pickNumber));
+		const last3TeamPicksShiftCount = last3TeamPickNumbers
+			.filter((pickNumber) => teamShiftPickNumbers.has(pickNumber))
+			.length;
+
+		return {
+			teamIndex,
+			totalShifts,
+			last3TeamPicksShiftCount,
+			majorShiftCount,
+			topCategory,
+		};
+	});
+}
+
 const api = createRouter();
 
 // In-flight seed promise to deduplicate concurrent seed calls
@@ -44,7 +104,7 @@ let seedPromise: Promise<Player[]> | null = null;
 
 type SeedStatus = 'cached' | 'seeded' | 'joined_inflight';
 
-async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], vector: Parameters<typeof seedPlayers>[1], logger: { info: (msg: string, meta?: Record<string, unknown>) => void }): Promise<{ players: Player[]; status: SeedStatus }> {
+async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], logger: { info: (msg: string, meta?: Record<string, unknown>) => void }): Promise<{ players: Player[]; status: SeedStatus }> {
 	const existing = await kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS);
 	if (existing.exists && existing.data.length > 0) {
 		return { players: existing.data, status: 'cached' };
@@ -55,7 +115,7 @@ async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], vector: Param
 	// Deduplicate: if a seed is already in-flight, join it
 	if (startedHere) {
 		logger.info('Seeding player data');
-		seedPromise = seedPlayers(kv, vector).finally(() => { seedPromise = null; });
+		seedPromise = seedPlayers(kv).finally(() => { seedPromise = null; });
 	}
 
 	const inFlightSeed = seedPromise;
@@ -69,9 +129,9 @@ async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], vector: Param
 // Health check
 api.get('/health', (c) => c.json({ status: 'ok' }));
 
-// POST /draft/seed - Seed player data (Vector + KV). Skips if already seeded.
+// POST /draft/seed - Seed player data into KV. Skips if already seeded.
 api.post('/draft/seed', async (c) => {
-	const { players, status } = await ensureSeeded(c.var.kv, c.var.vector, c.var.logger);
+	const { players, status } = await ensureSeeded(c.var.kv, c.var.logger);
 	if (status === 'cached') {
 		c.var.logger.debug('Players already seeded, skipping', { count: players.length });
 	} else if (status === 'joined_inflight') {
@@ -94,7 +154,7 @@ api.post('/draft/start', async (c) => {
 	c.var.logger.info('Starting new draft', { humanTeamIndex });
 
 	// Ensure player data is seeded (deduplicates with concurrent /draft/seed calls)
-	await ensureSeeded(c.var.kv, c.var.vector, c.var.logger);
+	await ensureSeeded(c.var.kv, c.var.logger);
 
 	// Initialize the draft via commissioner
 	const result = await commissioner.run({
@@ -181,6 +241,7 @@ api.post('/draft/advance', async (c) => {
 // GET /draft/advance/stream - SSE streaming endpoint for AI pick with live thinking
 api.get('/draft/advance/stream', sse(async (c, stream) => {
 	const logger = c.var.logger;
+	let durableStream: { id: string; url: string; write: (chunk: object) => Promise<void>; close: () => Promise<void> } | null = null;
 
 	try {
 		// 1. Read board state
@@ -243,7 +304,26 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			}),
 		});
 
-		// 4. Run board analysis
+		// 4. Create durable stream for pick replay (best-effort, non-blocking)
+		try {
+			const created = await c.var.stream.create('pick-reasoning', {
+				contentType: 'application/x-ndjson',
+				metadata: {
+					pickNumber: String(currentPick.pickNumber),
+					teamIndex: String(currentPick.teamIndex),
+					persona: personaName,
+				},
+				ttl: null,
+			});
+			durableStream = created;
+		} catch (err) {
+			logger.warn('Failed to create durable stream, continuing without replay recording', { error: String(err) });
+		}
+
+		// Track tool names used during this pick for the reasoning summary
+		const toolsUsed: string[] = [];
+
+		// 5. Run board analysis
 		const boardAnalysis = analyzeBoardState(boardState.picks, availablePlayers, currentPick.pickNumber);
 
 		// Emit board context so ThinkingPanel shows trends before reasoning
@@ -270,6 +350,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			// Use fallback pick - roster is full
 			const fb = fallbackPick(availablePlayers, roster);
 			if (!fb) {
+				try { await durableStream?.close(); } catch {}
 				await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'No players fit roster' }) });
 				stream.close();
 				return;
@@ -315,12 +396,13 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		const model = DRAFTER_MODELS[personaName] ?? DRAFTER_MODELS['drafter-balanced']!;
 
 		const tools = createDrafterTools({
-			vector: c.var.vector,
 			kv: c.var.kv,
 			availablePlayers,
 			roster,
 			picks: boardState.picks,
 			pickNumber: currentPick.pickNumber,
+			teamIndex: currentPick.teamIndex,
+			round: currentPick.round,
 		});
 
 		const toolOrientedPrompt = buildToolOrientedPrompt(
@@ -365,7 +447,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 							description: 'Final fantasy draft pick selection.',
 						}),
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(4),
+						stopWhen: stepCountIs(5),
 					})
 					: streamText({
 						model,
@@ -373,7 +455,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 						prompt: toolOrientedPrompt,
 						tools,
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(4),
+						stopWhen: stepCountIs(5),
 					});
 
 				for await (const part of result.fullStream) {
@@ -381,9 +463,11 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 					case 'text-delta':
 						fullText += part.text;
 						await stream.writeSSE({ event: 'thinking', data: part.text });
+						try { await durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }); } catch {}
 						break;
 
 					case 'tool-call':
+						if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
 						await stream.writeSSE({
 							event: 'tool-call',
 							data: JSON.stringify({
@@ -392,6 +476,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 								args: part.input,
 							}),
 						});
+						try { await durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }); } catch {}
 						break;
 
 					case 'tool-result':
@@ -403,6 +488,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 								result: summarizeToolResult(part.toolName, part.output),
 							}),
 						});
+						try { await durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }); } catch {}
 						break;
 					}
 				}
@@ -470,6 +556,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		if (!pickedPlayer) {
 			pickedPlayer = fallbackPick(availablePlayers, roster);
 			if (!pickedPlayer) {
+				try { await durableStream?.close(); } catch {}
 				await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'No valid pick possible' }) });
 				stream.close();
 				return;
@@ -502,9 +589,53 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		});
 
 		if (!result.success) {
+			try { await durableStream?.close(); } catch {}
 			await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: result.message }) });
 			stream.close();
 			return;
+		}
+
+		// 9. Write reasoning summary to KV (critical path for getDraftIntel tool)
+		// and close the durable stream (best-effort for replay)
+		const reasoningSummary: ReasoningSummary = {
+			pickNumber: currentPick.pickNumber,
+			teamIndex: currentPick.teamIndex,
+			persona: personaName,
+			model: modelName,
+			playerId: pickedPlayer.playerId,
+			playerName: pickedPlayer.name,
+			position: pickedPlayer.position,
+			summary: pickReasoning.slice(0, 500),
+			toolsUsed,
+			confidence: pickConfidence,
+			timestamp: Date.now(),
+			...(durableStream ? { streamId: durableStream.id, streamUrl: durableStream.url } : {}),
+		};
+
+		// Best-effort: KV reasoning summary + durable stream close.
+		// The pick is already committed via recordPick above, so failures
+		// here should not surface as errors to the client.
+		try {
+			await c.var.kv.set(KV_PICK_REASONING, `pick-${currentPick.pickNumber}`, reasoningSummary, { ttl: null });
+		} catch (err) {
+			logger.warn('Failed to write reasoning summary to KV', { error: String(err), pickNumber: currentPick.pickNumber });
+		}
+
+		try {
+			if (durableStream) {
+				await durableStream.write({
+					type: 'pick-summary',
+					pickNumber: currentPick.pickNumber,
+					persona: personaName,
+					player: pickedPlayer.name,
+					position: pickedPlayer.position,
+					reasoning: pickReasoning,
+					confidence: pickConfidence,
+				});
+				await durableStream.close();
+			}
+		} catch (err) {
+			logger.warn('Failed to close durable stream', { error: String(err) });
 		}
 
 		// Emit strategy shift event if one was detected
@@ -528,7 +659,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			logger.warn('Failed to fetch updated rosters after pick, sending pick without rosters', { error: String(err) });
 		}
 
-		// 9. Send pick event with full data
+		// 10. Send pick event with full data (includes stream info for frontend replay)
 		await stream.writeSSE({
 			event: 'pick',
 			data: JSON.stringify({
@@ -536,10 +667,11 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 				boardState: result.boardState,
 				...(rosters.length > 0 ? { rosters } : {}),
 				draftComplete: result.draftComplete,
+				...(durableStream ? { streamId: durableStream.id, streamUrl: durableStream.url } : {}),
 			}),
 		});
 
-		// 10. Done
+		// 11. Done
 		await stream.writeSSE({ event: 'done', data: '' });
 		stream.close();
 
@@ -547,9 +679,11 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			persona: personaName,
 			player: pickedPlayer.name,
 			pickNumber: currentPick.pickNumber,
+			hasReplay: !!durableStream,
 		});
 	} catch (err) {
 		logger.error('SSE handler error', { error: String(err) });
+		try { await durableStream?.close(); } catch {}
 		try {
 			await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: String(err) }) });
 		} catch {
@@ -571,15 +705,21 @@ api.get('/draft/players', async (c) => {
 // GET /draft/strategies - Get persona assignments and strategy shifts
 api.get('/draft/strategies', async (c) => {
 	try {
-		const personasResult = await c.var.kv.get(KV_AGENT_STRATEGIES, 'persona-assignments');
-		const shiftsResult = await c.var.kv.get(KV_AGENT_STRATEGIES, 'strategy-shifts');
+		const [personasResult, shiftsResult, boardResult] = await Promise.all([
+			c.var.kv.get<PersonaAssignment[]>(KV_AGENT_STRATEGIES, 'persona-assignments'),
+			c.var.kv.get<StrategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts'),
+			c.var.kv.get<BoardState>(KV_DRAFT_STATE, KEY_BOARD_STATE),
+		]);
+		const normalizedShifts = shiftsResult.exists ? shiftsResult.data.map((shift) => normalizeShift(shift)) : [];
+		const picks = boardResult.exists ? boardResult.data.picks : [];
 		return c.json({
 			personas: personasResult.exists ? personasResult.data : null,
-			shifts: shiftsResult.exists ? shiftsResult.data : [],
+			shifts: normalizedShifts,
+			teamShiftSummary: buildTeamShiftSummary(normalizedShifts, picks),
 		});
 	} catch (err) {
 		c.var.logger.warn('KV read failed in /draft/strategies', { error: String(err) });
-		return c.json({ personas: null, shifts: [] });
+		return c.json({ personas: null, shifts: [], teamShiftSummary: [] });
 	}
 });
 
@@ -606,6 +746,8 @@ api.post('/draft/test/trigger-shift', async (c) => {
 		reasoning: 'This is a test shift injected via the /draft/test/trigger-shift endpoint.',
 		playerPicked: 'Test Player',
 		position: 'QB' as const,
+		category: 'strategy-break' as const,
+		severity: 'major' as const,
 	};
 
 	// Append to existing shifts

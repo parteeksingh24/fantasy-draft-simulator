@@ -1,4 +1,4 @@
-import type { BoardState, Player, Position, Roster, PersonaAssignment, StrategyShift } from './types';
+import type { BoardState, Player, Position, Roster, PersonaAssignment, StrategyShift, TeamShiftSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -81,6 +81,7 @@ export interface PickResponse {
 export interface StrategiesResponse {
 	personas: PersonaAssignment[] | null;
 	shifts: StrategyShift[];
+	teamShiftSummary: TeamShiftSummary[];
 }
 
 export const api = {

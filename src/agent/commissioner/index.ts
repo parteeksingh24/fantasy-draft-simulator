@@ -15,6 +15,7 @@ import drafterReactive from '../drafter-reactive';
 import { assignPersonas, KV_PERSONA_ASSIGNMENTS, type PersonaAssignment } from '../../lib/persona-assignment';
 import { analyzeBoardState } from '../../lib/board-analysis';
 import { recordPick } from '../../lib/record-pick';
+import { DRAFTER_MODEL_NAMES } from '../../lib/drafter-models';
 import {
 	type Player,
 	type Roster,
@@ -22,6 +23,7 @@ import {
 	type DraftSettings,
 	type Pick,
 	type CurrentPick,
+	type ReasoningSummary,
 	PickSchema,
 	BoardStateSchema,
 	getSnakeDraftPick,
@@ -30,6 +32,7 @@ import {
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
+	KV_PICK_REASONING,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
 	KEY_SETTINGS,
@@ -305,6 +308,7 @@ const agent = createAgent('commissioner', {
 					position: fb.position,
 					reasoning: `Fallback pick after agent error: ${fb.name} is the highest-ranked available player (Rank ${fb.rank}).`,
 					confidence: 0.3,
+					toolsUsed: [],
 				};
 			}
 
@@ -363,6 +367,22 @@ const agent = createAgent('commissioner', {
 					draftComplete: recordResult.draftComplete,
 				};
 			}
+
+			// Write reasoning summary to KV so getDraftIntel tool has data
+			const reasoningSummary: ReasoningSummary = {
+				pickNumber: currentPick.pickNumber,
+				teamIndex: currentPick.teamIndex,
+				persona: personaName,
+				model: DRAFTER_MODEL_NAMES[personaName] ?? 'unknown',
+				playerId: pickedPlayer.playerId,
+				playerName: pickedPlayer.name,
+				position: pickedPlayer.position,
+				summary: drafterResult.reasoning.slice(0, 500),
+				toolsUsed: drafterResult.toolsUsed,
+				confidence: drafterResult.confidence,
+				timestamp: Date.now(),
+			};
+			await ctx.kv.set(KV_PICK_REASONING, `pick-${currentPick.pickNumber}`, reasoningSummary, { ttl: null });
 
 			ctx.logger.info('AI pick recorded', {
 				pick: recordResult.pick.pickNumber,

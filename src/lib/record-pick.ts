@@ -12,16 +12,21 @@ import {
 	type DraftSettings,
 	type Pick,
 	type CurrentPick,
+	type ScoutingNote,
+	type StrategyShift,
 	canDraftPosition,
 	assignRosterSlot,
 	getSnakeDraftPick,
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
+	KV_SCOUTING_NOTES,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
 	TOTAL_PICKS,
 	TEAM_NAMES,
+	MAX_NOTE_LENGTH,
+	MAX_NOTES_PER_TEAM,
 } from './types';
 import { detectPersonaShift, type BoardAnalysis } from './board-analysis';
 
@@ -51,7 +56,9 @@ export interface RecordPickResult {
 		trigger: string;
 		reasoning: string;
 		playerPicked: string;
-		position: string;
+		position: StrategyShift['position'];
+		category: StrategyShift['category'];
+		severity: StrategyShift['severity'];
 	};
 }
 
@@ -192,17 +199,19 @@ export async function recordPick(
 	// Detect behavior-based strategy shifts
 	let detectedShift: RecordPickResult['strategyShift'] | undefined;
 	if (personaName && boardAnalysis) {
-		const shiftTrigger = detectPersonaShift(personaName, pick, boardAnalysis, latestAvailablePlayers);
+		const shiftDetection = detectPersonaShift(personaName, pick, boardAnalysis, latestAvailablePlayers);
 
-		if (shiftTrigger) {
-			const strategyShift = {
+		if (shiftDetection) {
+			const strategyShift: StrategyShift = {
 				pickNumber: currentPick.pickNumber,
 				teamIndex: currentPick.teamIndex,
 				persona: personaName,
-				trigger: shiftTrigger,
+				trigger: shiftDetection.trigger,
 				reasoning,
 				playerPicked: latestPickedPlayer.name,
 				position: latestPickedPlayer.position,
+				category: shiftDetection.category,
+				severity: shiftDetection.severity,
 			};
 
 			detectedShift = strategyShift;
@@ -211,9 +220,34 @@ export async function recordPick(
 			await kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: null });
 
 			// Append to cumulative array (for GET /draft/strategies)
-			const existingShifts = await kv.get<typeof strategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
+			// and mirror it into team scouting notes with a shift discriminator.
+			const [existingShifts, existingNotes] = await Promise.all([
+				kv.get<StrategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts'),
+				kv.get<ScoutingNote[]>(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`),
+			]);
+
 			const allShifts = existingShifts.exists ? [...existingShifts.data, strategyShift] : [strategyShift];
-			await kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null });
+
+			const shiftNote: ScoutingNote = {
+				id: `shift-note-${currentPick.pickNumber}-${Date.now()}`,
+				round: currentPick.round,
+				pickNumber: currentPick.pickNumber,
+				text: `Pick #${currentPick.pickNumber}: ${strategyShift.category} (${strategyShift.severity}) - ${strategyShift.trigger}`.slice(0, MAX_NOTE_LENGTH),
+				tags: ['shift', `category:${strategyShift.category}`, `severity:${strategyShift.severity}`],
+				timestamp: Date.now(),
+				type: 'shift',
+			};
+
+			const notes = existingNotes.exists ? existingNotes.data : [];
+			const nextNotes = [...notes, shiftNote];
+			const trimmedNotes = nextNotes.length > MAX_NOTES_PER_TEAM
+				? nextNotes.slice(nextNotes.length - MAX_NOTES_PER_TEAM)
+				: nextNotes;
+
+			await Promise.all([
+				kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null }),
+				kv.set(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`, trimmedNotes, { ttl: null }),
+			]);
 		}
 	}
 

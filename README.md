@@ -109,7 +109,7 @@ export const DRAFTER_MODELS: Record<string, LanguageModel> = {
   'drafter-bold':     openai('gpt-5-mini'),
   'drafter-qb-first': xai('grok-3-fast'),
   'drafter-stack-builder': deepseek('deepseek-reasoner'),
-  'drafter-te-premium':    moonshotai('kimi-k2.5'),
+  'drafter-te-premium':    openai('gpt-5-mini'),
   // ...
 };
 ```
@@ -141,7 +141,7 @@ Each draft randomly assigns personas from a weighted pool. Duplicates are allowe
 | stud-rb | gpt-5-nano | OpenAI | Locks in a bellcow RB round 1, values volume and touches |
 | value-hunter | claude-haiku-4-5 | Anthropic | Picks the biggest value drop regardless of position |
 | stack-builder | deepseek-reasoner | DeepSeek | Builds QB/WR same-team stacks for correlated upside |
-| te-premium | kimi-k2.5 | Moonshot AI | Reaches for elite TEs early, exploits the TE wasteland |
+| te-premium | gpt-5-mini | OpenAI | Reaches for elite TEs early, exploits the TE wasteland |
 | youth-movement | claude-haiku-4-5 | Anthropic | Targets players under 26, avoids aging veterans |
 | contrarian | grok-4-1-fast-reasoning | xAI | Goes against position runs, exploits herd behavior |
 | risk-averse | grok-4-1-fast-reasoning | xAI | Takes the highest-ranked safe player, never reaches |
@@ -262,7 +262,7 @@ src/
 │   ├── drafter-stud-rb/index.ts    # gpt-5-nano
 │   ├── drafter-value-hunter/index.ts  # claude-haiku-4-5
 │   ├── drafter-stack-builder/index.ts # deepseek-reasoner
-│   ├── drafter-te-premium/index.ts    # kimi-k2.5
+│   ├── drafter-te-premium/index.ts    # gpt-5-mini
 │   ├── drafter-youth-movement/index.ts # claude-haiku-4-5
 │   ├── drafter-contrarian/index.ts    # grok-4-1-fast-reasoning
 │   ├── drafter-risk-averse/index.ts   # grok-4-1-fast-reasoning

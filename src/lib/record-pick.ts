@@ -216,11 +216,7 @@ export async function recordPick(
 
 			detectedShift = strategyShift;
 
-			// Write individual key (for per-pick lookup)
-			await kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: null });
-
-			// Append to cumulative array (for GET /draft/strategies)
-			// and mirror it into team scouting notes with a shift discriminator.
+			// Read existing shifts and scouting notes in parallel
 			const [existingShifts, existingNotes] = await Promise.all([
 				kv.get<StrategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts'),
 				kv.get<ScoutingNote[]>(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`),
@@ -244,7 +240,9 @@ export async function recordPick(
 				? nextNotes.slice(nextNotes.length - MAX_NOTES_PER_TEAM)
 				: nextNotes;
 
+			// Write per-pick key, cumulative array, and scouting note in one batch
 			await Promise.all([
+				kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: null }),
 				kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null }),
 				kv.set(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`, trimmedNotes, { ttl: null }),
 			]);

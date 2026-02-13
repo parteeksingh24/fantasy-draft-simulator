@@ -214,9 +214,20 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 						.describe('Filter notes by tag'),
 				}),
 				execute: async ({ noteLimit, noteTag }): Promise<DraftIntelResult> => {
+					// --- Parallel KV reads: notes, reasoning summaries, and shifts ---
+					const REASONING_CAP = 3;
+					const reasoningKeys: string[] = [];
+					for (let i = deps.pickNumber - 1; i >= Math.max(1, deps.pickNumber - REASONING_CAP); i--) {
+						reasoningKeys.push(`pick-${i}`);
+					}
+
+					const [notesResult, shiftsResult, ...reasoningResults] = await Promise.all([
+						deps.kv.get<ScoutingNote[]>(KV_SCOUTING_NOTES, `team-${deps.teamIndex}`),
+						deps.kv.get<StrategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts'),
+						...reasoningKeys.map((key) => deps.kv.get<ReasoningSummary>(KV_PICK_REASONING, key)),
+					]);
+
 					// --- Your scouting notes ---
-					const notesKey = `team-${deps.teamIndex}`;
-					const notesResult = await deps.kv.get<ScoutingNote[]>(KV_SCOUTING_NOTES, notesKey);
 					let rawNotes: ScoutingNote[] = notesResult.exists ? notesResult.data : [];
 
 					// Optional tag filter
@@ -235,12 +246,9 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 						type: n.type ?? 'general',
 					}));
 
-					// --- Recent global reasoning (fixed cap of 3) ---
-					const REASONING_CAP = 3;
+					// --- Recent global reasoning ---
 					const recentReasoning: IntelReasoningItem[] = [];
-
-					for (let i = deps.pickNumber - 1; i >= Math.max(1, deps.pickNumber - REASONING_CAP); i--) {
-						const result = await deps.kv.get<ReasoningSummary>(KV_PICK_REASONING, `pick-${i}`);
+					for (const result of reasoningResults) {
 						if (result.exists) {
 							recentReasoning.push({
 								pickNumber: result.data.pickNumber,
@@ -255,7 +263,6 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 					}
 
 					// --- Recent team strategy shifts (fixed cap of 2) ---
-					const shiftsResult = await deps.kv.get<StrategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
 					const recentTeamShifts: IntelShiftItem[] = (shiftsResult.exists ? shiftsResult.data : [])
 						.filter((shift) => shift.teamIndex === deps.teamIndex)
 						.slice(-2)

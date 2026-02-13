@@ -178,7 +178,7 @@ export const PERSONA_MODELS: Record<string, string> = {
 	'drafter-stud-rb': 'gpt-5-nano',
 	'drafter-value-hunter': 'claude-haiku-4-5',
 	'drafter-stack-builder': 'deepseek-reasoner',
-	'drafter-te-premium': 'kimi-k2.5',
+	'drafter-te-premium': 'gpt-5-mini',
 	'drafter-youth-movement': 'claude-haiku-4-5',
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',
 	'drafter-risk-averse': 'grok-4-1-fast-reasoning',

@@ -7,7 +7,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { xai } from '@ai-sdk/xai';
 import { deepseek } from '@ai-sdk/deepseek';
-import { moonshotai } from '@ai-sdk/moonshotai';
+
 
 export const DRAFTER_MODELS: Record<string, LanguageModel> = {
 	'drafter-balanced': anthropic('claude-sonnet-4-5'),
@@ -17,7 +17,7 @@ export const DRAFTER_MODELS: Record<string, LanguageModel> = {
 	'drafter-stud-rb': openai('gpt-5-nano'),
 	'drafter-value-hunter': anthropic('claude-haiku-4-5'),
 	'drafter-stack-builder': deepseek('deepseek-reasoner'),
-	'drafter-te-premium': moonshotai('kimi-k2.5'),
+	'drafter-te-premium': openai('gpt-5-mini'),
 	'drafter-youth-movement': anthropic('claude-haiku-4-5'),
 	'drafter-contrarian': xai('grok-4-1-fast-reasoning'),
 	'drafter-risk-averse': xai('grok-4-1-fast-reasoning'),
@@ -32,7 +32,7 @@ export const DRAFTER_MODEL_NAMES: Record<string, string> = {
 	'drafter-stud-rb': 'gpt-5-nano',
 	'drafter-value-hunter': 'claude-haiku-4-5',
 	'drafter-stack-builder': 'deepseek-reasoner',
-	'drafter-te-premium': 'kimi-k2.5',
+	'drafter-te-premium': 'gpt-5-mini',
 	'drafter-youth-movement': 'claude-haiku-4-5',
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',
 	'drafter-risk-averse': 'grok-4-1-fast-reasoning',

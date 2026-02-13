@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { openai } from '@ai-sdk/openai';
+import { moonshotai } from '@ai-sdk/moonshotai';
 
 export default createAgent('drafter-te-premium', {
 	description: 'TE scarcity drafter that reaches for elite tight ends early to exploit the positional drop-off.',
@@ -17,6 +17,6 @@ The positional advantage of having a top TE is enormous. While other teams strea
 You will gladly take a top TE over a "better value" RB or WR because the replacement-level gap at TE is the largest in fantasy football. If an elite TE is already on your roster, pivot to BPA for other positions. But if the TE slot is open and a top-tier TE is on the board, that is your pick, no hesitation.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: openai('gpt-5-mini'),
+		model: moonshotai('kimi-k2.5'),
 	}),
 });

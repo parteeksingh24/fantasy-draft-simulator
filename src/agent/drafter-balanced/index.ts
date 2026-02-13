@@ -16,9 +16,9 @@ Given the current board state, your team's roster, and available players, select
 
 Consider:
 - Which roster slots are still empty (you MUST pick a position that fits an open slot)
-- Player ADP and tier (lower ADP = better player)
+- Player Rank and tier (lower rank = better player)
 - Overall team balance
-- Value (how far the player has fallen from their ADP, i.e. pickNumber minus ADP; positive means the player fell)
+- Value (how far the player has fallen from their expected rank, i.e. pickNumber minus Rank; positive means the player fell)
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
 		model: anthropic('claude-sonnet-4-5'),

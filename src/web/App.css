@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
 
 @theme {
 	/* Cyan (Agentuity Brand) */
@@ -44,9 +47,83 @@
 			content: '';
 		}
 	}
+
+	/* shadcn semantic colors (bridged from :root CSS vars) */
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+
+	/* shadcn radius */
+	--radius-sm: 0.25rem;
+	--radius-md: 0.375rem;
+	--radius-lg: 0.5rem;
+	--radius-xl: 0.75rem;
+}
+
+/* shadcn semantic tokens - dark-only theme (applied on :root since body has dark class) */
+:root {
+	--background: oklch(0.141 0.005 285.823); /* gray-950 */
+	--foreground: oklch(0.985 0 0); /* gray-50 */
+
+	--card: oklch(0.178 0.005 285.9); /* slightly lighter than background */
+	--card-foreground: oklch(0.985 0 0);
+
+	--popover: oklch(0.21 0.006 285.885); /* gray-900 */
+	--popover-foreground: oklch(0.985 0 0);
+
+	--primary: oklch(0.9054 0.15455 194.769); /* cyan-500 */
+	--primary-foreground: oklch(0.141 0.005 285.823); /* gray-950 */
+
+	--secondary: oklch(0.274 0.006 286.033); /* gray-800 */
+	--secondary-foreground: oklch(0.871 0.006 286.286); /* gray-300 */
+
+	--muted: oklch(0.274 0.006 286.033); /* gray-800 */
+	--muted-foreground: oklch(0.552 0.016 285.938); /* gray-500 */
+
+	--accent: oklch(0.274 0.006 286.033); /* gray-800 */
+	--accent-foreground: oklch(0.985 0 0);
+
+	--destructive: oklch(0.577 0.245 27.325);
+	--destructive-foreground: oklch(0.985 0 0);
+
+	--border: oklch(0.274 0.006 286.033); /* gray-800 */
+	--input: oklch(0.274 0.006 286.033); /* gray-800 */
+	--ring: oklch(0.9054 0.15455 194.769); /* cyan-500 */
 }
 
 [data-loading="true"]::after {
 	content: '.';
 	@apply inline-block w-4 animate-ellipsis text-left;
 }
+
+.prose-xs {
+	font-size: 0.75rem;
+	line-height: 1.5;
+}
+.prose-xs p { margin-top: 0.5em; margin-bottom: 0.5em; }
+.prose-xs ul, .prose-xs ol { margin-top: 0.25em; margin-bottom: 0.25em; padding-left: 1.25em; }
+.prose-xs li { margin-top: 0.125em; margin-bottom: 0.125em; }
+
+.prose-sm {
+	font-size: 0.875rem;
+	line-height: 1.625;
+}
+.prose-sm p { margin-top: 0.5em; margin-bottom: 0.5em; }
+.prose-sm ul, .prose-sm ol { margin-top: 0.25em; margin-bottom: 0.25em; padding-left: 1.25em; }
+.prose-sm li { margin-top: 0.125em; margin-bottom: 0.125em; }

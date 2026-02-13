@@ -49,7 +49,31 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: never;
 			};
+	'GET /api/draft/players': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/seed': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/draft/start': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/draft/strategies': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/test/trigger-shift': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
@@ -78,7 +102,12 @@ declare module '@agentuity/frontend' {
 	 * Maps SSE route paths to their schemas
 	 */
 	export interface SSERouteRegistry {
-
+	'/api/draft/advance/stream': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	}
 
 	/**
@@ -94,6 +123,12 @@ declare module '@agentuity/frontend' {
 				 * Route: POST /api/draft/advance
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+				stream: {
+					/**
+					 * Route: GET /api/draft/advance/stream
+					 */
+					eventstream: { input: never; output: never; type: 'sse'; params: never; paramsTuple: [] };
+				};
 			};
 			board: {
 				/**
@@ -107,11 +142,37 @@ declare module '@agentuity/frontend' {
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			players: {
+				/**
+				 * Route: GET /api/draft/players
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			seed: {
+				/**
+				 * Route: POST /api/draft/seed
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			start: {
 				/**
 				 * Route: POST /api/draft/start
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			strategies: {
+				/**
+				 * Route: GET /api/draft/strategies
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			test: {
+				triggerShift: {
+					/**
+					 * Route: POST /api/draft/test/trigger-shift
+					 */
+					post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+				};
 			};
 		};
 		health: {
@@ -145,7 +206,31 @@ declare module '@agentuity/react' {
 				stream: false;
 				params: never;
 			};
+	'GET /api/draft/players': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/seed': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/draft/start': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'GET /api/draft/strategies': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/test/trigger-shift': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
@@ -162,7 +247,12 @@ declare module '@agentuity/react' {
 
 	}
 	export interface SSERouteRegistry {
-
+	'/api/draft/advance/stream': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	}
 	export interface RPCRouteRegistry {
 		draft: {
@@ -171,6 +261,12 @@ declare module '@agentuity/react' {
 				 * Route: POST /api/draft/advance
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+				stream: {
+					/**
+					 * Route: GET /api/draft/advance/stream
+					 */
+					eventstream: { input: never; output: never; type: 'sse'; params: never; paramsTuple: [] };
+				};
 			};
 			board: {
 				/**
@@ -184,11 +280,37 @@ declare module '@agentuity/react' {
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			players: {
+				/**
+				 * Route: GET /api/draft/players
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			seed: {
+				/**
+				 * Route: POST /api/draft/seed
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			start: {
 				/**
 				 * Route: POST /api/draft/start
 				 */
 				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			strategies: {
+				/**
+				 * Route: GET /api/draft/strategies
+				 */
+				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
+			test: {
+				triggerShift: {
+					/**
+					 * Route: POST /api/draft/test/trigger-shift
+					 */
+					post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+				};
 			};
 		};
 		health: {
@@ -211,6 +333,12 @@ const _rpcRouteMetadata = {
 						"post": {
 								"type": "api",
 								"path": "/api/draft/advance"
+						},
+						"stream": {
+								"eventstream": {
+										"type": "sse",
+										"path": "/api/draft/advance/stream"
+								}
 						}
 				},
 				"board": {
@@ -225,10 +353,36 @@ const _rpcRouteMetadata = {
 								"path": "/api/draft/pick"
 						}
 				},
+				"players": {
+						"get": {
+								"type": "api",
+								"path": "/api/draft/players"
+						}
+				},
+				"seed": {
+						"post": {
+								"type": "api",
+								"path": "/api/draft/seed"
+						}
+				},
 				"start": {
 						"post": {
 								"type": "api",
 								"path": "/api/draft/start"
+						}
+				},
+				"strategies": {
+						"get": {
+								"type": "api",
+								"path": "/api/draft/strategies"
+						}
+				},
+				"test": {
+						"triggerShift": {
+								"post": {
+										"type": "api",
+										"path": "/api/draft/test/trigger-shift"
+								}
 						}
 				}
 		},

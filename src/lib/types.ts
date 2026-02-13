@@ -16,7 +16,7 @@ export const PlayerSchema = s.object({
 	name: s.string().describe('Full player name'),
 	position: PositionSchema.describe('Player position'),
 	team: s.string().describe('NFL team abbreviation'),
-	adp: s.number().describe('Average draft position'),
+	rank: s.number().describe('Sleeper search rank (lower = better)'),
 	tier: s.number().describe('Player tier (1 = elite, 5 = deep)'),
 	age: s.number().describe('Player age'),
 	byeWeek: s.number().describe('Bye week number'),
@@ -30,7 +30,7 @@ export interface PlayerMetadata extends Record<string, unknown> {
 	name: string;
 	position: Position;
 	team: string;
-	adp: number;
+	rank: number;
 	tier: number;
 	age: number;
 	byeWeek: number;

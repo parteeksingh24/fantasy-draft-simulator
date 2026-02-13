@@ -1,10 +1,10 @@
-import type { KeyValueStorage, VectorStorage } from '@agentuity/core';
+import type { KeyValueStorage } from '@agentuity/core';
+import type { VectorStorage } from '@agentuity/core';
 import {
 	type Player,
-	type PlayerMetadata,
-	VECTOR_PLAYERS,
 	KV_DRAFT_STATE,
 	KEY_AVAILABLE_PLAYERS,
+	VECTOR_PLAYERS,
 } from './types';
 
 // Sleeper API types
@@ -65,6 +65,12 @@ async function fetchSleeperPlayers(): Promise<SleeperPlayer[]> {
 			// Must have a search rank (for sorting)
 			if (!p.search_rank || p.search_rank === 999999) return false;
 
+			// Must have a current NFL team (filter out free agents and retired)
+			if (!p.team || p.team === '') return false;
+
+			// Must have recent experience (filter out long-retired players)
+			if (p.years_exp !== undefined && p.years_exp > 15) return false;
+
 			return true;
 		})
 		.sort((a, b) => a.search_rank - b.search_rank)
@@ -91,7 +97,7 @@ function calculateTier(searchRank: number): number {
 function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer, index: number): Player {
 	const team = sleeperPlayer.team || 'FA';
 	const byeWeek = BYE_WEEKS[team] || DEFAULT_BYE_WEEK;
-	const adp = index + 1; // Use array index as ADP proxy (since we sorted by search_rank)
+	const rank = sleeperPlayer.search_rank;
 	const tier = calculateTier(sleeperPlayer.search_rank);
 
 	return {
@@ -99,7 +105,7 @@ function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer, index: number): Player
 		name: sleeperPlayer.full_name,
 		position: sleeperPlayer.position as any,
 		team,
-		adp,
+		rank,
 		tier,
 		age: sleeperPlayer.age || 25,
 		byeWeek,
@@ -107,16 +113,42 @@ function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer, index: number): Player
 }
 
 /**
- * Build a text document for Vector semantic search.
- * Example: "Patrick Mahomes QB Kansas City Chiefs - Elite quarterback, age 28, ADP 5, Tier 1"
+ * Seed Vector storage in batches (embedding is slow).
+ * Runs in the background; callers should fire-and-forget.
  */
-function buildPlayerDocument(player: Player): string {
-	const tierLabel = player.tier === 1 ? 'Elite' : player.tier === 2 ? 'High-end' : player.tier === 3 ? 'Mid-tier' : player.tier === 4 ? 'Deep' : 'Waiver';
-	return `${player.name} ${player.position} ${player.team} - ${tierLabel} ${player.position.toLowerCase()}, age ${player.age}, ADP ${player.adp}, Tier ${player.tier}`;
+async function seedVector(vector: VectorStorage, players: Player[]): Promise<void> {
+	const BATCH_SIZE = 30;
+	const vectorDocs = players.map((player) => ({
+		key: player.playerId,
+		document: `${player.name}, ${player.position} for ${player.team}. Age ${player.age}, Rank ${player.rank}, Tier ${player.tier}. Bye week ${player.byeWeek}.`,
+		metadata: {
+			playerId: player.playerId,
+			name: player.name,
+			position: player.position,
+			team: player.team,
+			rank: player.rank,
+			tier: player.tier,
+			age: player.age,
+			byeWeek: player.byeWeek,
+		},
+		ttl: null as null,
+	}));
+
+	// Batch into smaller chunks to avoid timeouts
+	for (let i = 0; i < vectorDocs.length; i += BATCH_SIZE) {
+		const batch = vectorDocs.slice(i, i + BATCH_SIZE);
+		await vector.upsert(VECTOR_PLAYERS, ...batch);
+	}
 }
 
 /**
- * Seed players into Vector storage and KV storage.
+ * Seed players into KV and Vector storage.
+ *
+ * KV stores the available player list (source of truth for availability).
+ * Vector stores each player as an embedded document for semantic search.
+ * Vector seeding runs in the background (fire-and-forget) because it requires
+ * embedding 150 documents and is only needed when agents use the searchPlayers
+ * tool. Agents fall back to getTopAvailable (KV-based) if Vector isn't ready.
  *
  * @param kv - KeyValue storage interface
  * @param vector - Vector storage interface
@@ -133,31 +165,12 @@ export async function seedPlayers(kv: KeyValueStorage, vector: VectorStorage): P
 	// Map to our Player type
 	const players = sleeperPlayers.map((sp, index) => mapSleeperToPlayer(sp, index));
 
-	// Build all vector documents
-	const vectorDocuments = players.map((player) => ({
-		key: `player-${player.playerId}`,
-		document: buildPlayerDocument(player),
-		metadata: {
-			playerId: player.playerId,
-			name: player.name,
-			position: player.position,
-			team: player.team,
-			adp: player.adp,
-			tier: player.tier,
-			age: player.age,
-			byeWeek: player.byeWeek,
-		} satisfies PlayerMetadata,
-	}));
-
-	// Batch upsert to avoid timeout - 25 players per batch
-	const BATCH_SIZE = 25;
-	for (let i = 0; i < vectorDocuments.length; i += BATCH_SIZE) {
-		const batch = vectorDocuments.slice(i, i + BATCH_SIZE);
-		await vector.upsert(VECTOR_PLAYERS, ...batch);
-	}
-
-	// Store available player list in KV
+	// Store available player list in KV (primary source of truth, fast)
 	await kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null });
+
+	// Seed Vector storage in the background (slow - embedding 150 docs).
+	// AI agents have getTopAvailable (KV) as a fallback if Vector isn't ready yet.
+	seedVector(vector, players).catch(() => {});
 
 	return players;
 }

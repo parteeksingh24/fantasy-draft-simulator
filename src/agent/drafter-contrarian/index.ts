@@ -17,6 +17,6 @@ Board analysis is critical to your strategy. Carefully examine the recent picks 
 For example, if 4 of the last 6 picks were running backs, the WR and QB boards have not been touched, meaning top talent at those positions has fallen. That is your opportunity. You are not contrarian for the sake of it; you are contrarian because herd behavior creates predictable market inefficiencies, and you profit from them every time.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: xai('grok-3'),
+		model: xai('grok-4-1-fast-reasoning'),
 	}),
 });

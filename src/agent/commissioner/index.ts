@@ -12,7 +12,7 @@ import drafterYouthMovement from '../drafter-youth-movement';
 import drafterContrarian from '../drafter-contrarian';
 import drafterRiskAverse from '../drafter-risk-averse';
 import { assignPersonas, KV_PERSONA_ASSIGNMENTS, type PersonaAssignment } from '../../lib/persona-assignment';
-import { analyzeBoardState } from '../../lib/board-analysis';
+import { analyzeBoardState, detectPersonaShift } from '../../lib/board-analysis';
 import {
 	type Player,
 	type Roster,
@@ -139,23 +139,22 @@ const agent = createAgent('commissioner', {
 			const boardState = createInitialBoardState(humanTeamIndex);
 			const settings: DraftSettings = boardState.settings;
 
-			// Initialize empty rosters for all 12 teams
-			for (let i = 0; i < NUM_TEAMS; i++) {
-				const roster = createEmptyRoster(i);
-				await ctx.kv.set(KV_TEAM_ROSTERS, `team-${i}`, roster, { ttl: null });
-			}
-
 			// Assign personas to AI teams (weighted random, duplicates allowed)
 			const personaAssignments = assignPersonas(NUM_TEAMS, humanTeamIndex);
-			await ctx.kv.set(KV_AGENT_STRATEGIES, KV_PERSONA_ASSIGNMENTS, personaAssignments, { ttl: null });
 
 			ctx.logger.info('Personas assigned', {
 				assignments: personaAssignments.map((a) => `Team ${a.teamIndex}: ${a.persona}`),
 			});
 
-			// Store board state and settings in KV
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null });
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_SETTINGS, settings, { ttl: null });
+			// Initialize all 12 team rosters, persona assignments, board state, and settings in parallel
+			await Promise.all([
+				...Array.from({ length: NUM_TEAMS }, (_, i) =>
+					ctx.kv.set(KV_TEAM_ROSTERS, `team-${i}`, createEmptyRoster(i), { ttl: null }),
+				),
+				ctx.kv.set(KV_AGENT_STRATEGIES, KV_PERSONA_ASSIGNMENTS, personaAssignments, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_SETTINGS, settings, { ttl: null }),
+			]);
 
 			ctx.logger.info('Draft initialized', {
 				numTeams: NUM_TEAMS,
@@ -278,7 +277,35 @@ const agent = createAgent('commissioner', {
 				availableCount: availablePlayers.length,
 			});
 
-			const drafterResult = await drafterAgent.run(drafterInput);
+			let drafterResult: Awaited<ReturnType<typeof drafterAgent.run>>;
+			try {
+				drafterResult = await drafterAgent.run(drafterInput);
+			} catch (err) {
+				ctx.logger.error('Drafter agent call failed, using fallback pick', {
+					persona: personaName,
+					error: String(err),
+				});
+
+				// Fallback: pick best available by rank that fits roster
+				const sorted = [...availablePlayers].sort((a, b) => a.rank - b.rank);
+				const fb = sorted.find((p) => canDraftPosition(roster, p.position));
+				if (!fb) {
+					return {
+						success: false,
+						message: `Drafter (${personaName}) failed and no fallback player available.`,
+						boardState,
+						draftComplete: false,
+					};
+				}
+
+				drafterResult = {
+					playerId: fb.playerId,
+					playerName: fb.name,
+					position: fb.position,
+					reasoning: `Fallback pick after agent error: ${fb.name} is the highest-ranked available player (Rank ${fb.rank}).`,
+					confidence: 0.3,
+				};
+			}
 
 			// Validate the drafter's pick
 			const pickedPlayer = availablePlayers.find((p) => p.playerId === drafterResult.playerId);
@@ -322,33 +349,30 @@ const agent = createAgent('commissioner', {
 				confidence: drafterResult.confidence,
 			};
 
-			// Detect and log strategy shifts
-			const shiftKeywords = ['shift', 'adapt', 'pivot', 'change', 'adjust', 'deviate', 'instead'];
-			const hasShift = boardAnalysis.summary !== 'Board Analysis: No significant trends detected. Draft as planned.'
-				&& shiftKeywords.some((kw) => drafterResult.reasoning.toLowerCase().includes(kw));
+			// Detect behavior-based strategy shifts
+			const shiftTrigger = detectPersonaShift(personaName, pick, boardAnalysis, availablePlayers);
 
-			if (hasShift) {
+			if (shiftTrigger) {
 				const strategyShift = {
 					pickNumber: currentPick.pickNumber,
 					teamIndex: currentPick.teamIndex,
 					persona: personaName,
-					trigger: boardAnalysis.summary,
+					trigger: shiftTrigger,
 					reasoning: drafterResult.reasoning,
 					playerPicked: pickedPlayer.name,
 					position: pickedPlayer.position,
 				};
 
-				await ctx.kv.set(
-					KV_AGENT_STRATEGIES,
-					`shift-pick-${currentPick.pickNumber}`,
-					strategyShift,
-					{ ttl: null },
-				);
+				// Append to cumulative strategy-shifts array in KV
+				const existingShifts = await ctx.kv.get<typeof strategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
+				const allShifts = existingShifts.exists ? [...existingShifts.data, strategyShift] : [strategyShift];
+				await ctx.kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null });
 
 				ctx.logger.info('Strategy shift logged', {
 					pick: currentPick.pickNumber,
 					persona: personaName,
-					trigger: boardAnalysis.summary.substring(0, 100),
+					trigger: shiftTrigger,
+					totalShifts: allShifts.length,
 				});
 			}
 
@@ -373,10 +397,12 @@ const agent = createAgent('commissioner', {
 				boardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
 			}
 
-			// Write all updated state to KV
-			await ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null });
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null });
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null });
+			// Write all updated state to KV in parallel
+			await Promise.all([
+				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
+			]);
 
 			ctx.logger.info('AI pick recorded', {
 				pick: pick.pickNumber,
@@ -385,7 +411,7 @@ const agent = createAgent('commissioner', {
 				position: pickedPlayer.position,
 				slot,
 				persona: personaName,
-				strategyShift: hasShift,
+				strategyShift: !!shiftTrigger,
 				draftComplete: boardState.draftComplete,
 			});
 
@@ -526,10 +552,12 @@ const agent = createAgent('commissioner', {
 				boardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
 			}
 
-			// Write all updated state to KV
-			await ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null });
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null });
-			await ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null });
+			// Write all updated state to KV in parallel
+			await Promise.all([
+				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
+			]);
 
 			ctx.logger.info('Human pick recorded', {
 				pick: pick.pickNumber,

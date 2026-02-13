@@ -327,31 +327,31 @@ export type DrafterTePremiumAgent = AgentRunner<
 
 /**
  * Input type for drafter-value-hunter agent
- * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+ * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
  */
 export type DrafterValueHunterInput = InferInput<typeof drafterValueHunter['inputSchema']>;
 
 /**
  * Output type for drafter-value-hunter agent
- * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+ * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
  */
 export type DrafterValueHunterOutput = InferOutput<typeof drafterValueHunter['outputSchema']>;
 
 /**
  * Input schema type for drafter-value-hunter agent
- * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+ * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
  */
 export type DrafterValueHunterInputSchema = typeof drafterValueHunter['inputSchema'];
 
 /**
  * Output schema type for drafter-value-hunter agent
- * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+ * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
  */
 export type DrafterValueHunterOutputSchema = typeof drafterValueHunter['outputSchema'];
 
 /**
  * Agent type for drafter-value-hunter
- * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+ * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
  */
 export type DrafterValueHunterAgent = AgentRunner<
 	DrafterValueHunterInputSchema,
@@ -510,7 +510,7 @@ export const AgentDefinitions = {
 	drafterTePremium,
 	/**
 	 * drafter-value-hunter
-	 * Pure value-based drafter that picks whoever has fallen the furthest past their ADP.
+	 * Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.
 	 * @type {DrafterValueHunterAgent}
 	 */
 	drafterValueHunter,

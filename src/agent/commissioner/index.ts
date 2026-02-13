@@ -13,7 +13,8 @@ import drafterContrarian from '../drafter-contrarian';
 import drafterRiskAverse from '../drafter-risk-averse';
 import drafterReactive from '../drafter-reactive';
 import { assignPersonas, KV_PERSONA_ASSIGNMENTS, type PersonaAssignment } from '../../lib/persona-assignment';
-import { analyzeBoardState, detectPersonaShift } from '../../lib/board-analysis';
+import { analyzeBoardState } from '../../lib/board-analysis';
+import { recordPick } from '../../lib/record-pick';
 import {
 	type Player,
 	type Roster,
@@ -136,8 +137,6 @@ const agent = createAgent('commissioner', {
 				};
 			}
 
-			ctx.logger.info('Starting new draft', { humanTeamIndex });
-
 			const boardState = createInitialBoardState(humanTeamIndex);
 			const settings: DraftSettings = boardState.settings;
 
@@ -200,7 +199,7 @@ const agent = createAgent('commissioner', {
 				};
 			}
 
-			const { currentPick, settings } = boardState;
+			const { currentPick } = boardState;
 
 			// Block if it's the human's turn
 			if (currentPick.isHuman) {
@@ -339,90 +338,48 @@ const agent = createAgent('commissioner', {
 				};
 			}
 
-			// Record the pick
-			const pick: Pick = {
-				pickNumber: currentPick.pickNumber,
-				round: currentPick.round,
-				teamIndex: currentPick.teamIndex,
-				playerId: pickedPlayer.playerId,
-				playerName: pickedPlayer.name,
-				position: pickedPlayer.position,
+			const recordResult = await recordPick(ctx.kv, {
+				boardState,
+				roster,
+				availablePlayers,
+				pickedPlayer,
 				reasoning: drafterResult.reasoning,
 				confidence: drafterResult.confidence,
-			};
+				personaName,
+				boardAnalysis,
+			});
 
-			// Detect behavior-based strategy shifts
-			const shiftTrigger = detectPersonaShift(personaName, pick, boardAnalysis, availablePlayers);
-
-			if (shiftTrigger) {
-				const strategyShift = {
+			if (!recordResult.success || !recordResult.pick) {
+				ctx.logger.warn('AI pick failed to record', {
+					persona: personaName,
 					pickNumber: currentPick.pickNumber,
 					teamIndex: currentPick.teamIndex,
-					persona: personaName,
-					trigger: shiftTrigger,
-					reasoning: drafterResult.reasoning,
-					playerPicked: pickedPlayer.name,
-					position: pickedPlayer.position,
-				};
-
-				// Append to cumulative strategy-shifts array in KV
-				const existingShifts = await ctx.kv.get<typeof strategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
-				const allShifts = existingShifts.exists ? [...existingShifts.data, strategyShift] : [strategyShift];
-				await ctx.kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null });
-
-				ctx.logger.info('Strategy shift logged', {
-					pick: currentPick.pickNumber,
-					persona: personaName,
-					trigger: shiftTrigger,
-					totalShifts: allShifts.length,
+					message: recordResult.message,
 				});
+				return {
+					success: false,
+					message: recordResult.message,
+					boardState: recordResult.boardState,
+					draftComplete: recordResult.draftComplete,
+				};
 			}
-
-			// Update roster
-			const slot = assignRosterSlot(roster, pickedPlayer.position);
-			if (slot) {
-				const slotKey = slot === 'SUPERFLEX' ? 'superflex' : slot.toLowerCase() as 'qb' | 'rb' | 'wr' | 'te';
-				(roster as Record<string, unknown>)[slotKey] = pickedPlayer;
-			}
-
-			// Remove player from available list
-			const updatedAvailable = availablePlayers.filter((p) => p.playerId !== pickedPlayer.playerId);
-
-			// Update board state
-			boardState.picks.push(pick);
-
-			const isLastPick = currentPick.pickNumber >= TOTAL_PICKS;
-			if (isLastPick) {
-				boardState.draftComplete = true;
-				boardState.currentPick = currentPick; // keep as-is on last pick
-			} else {
-				boardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
-			}
-
-			// Write all updated state to KV in parallel
-			await Promise.all([
-				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
-			]);
 
 			ctx.logger.info('AI pick recorded', {
-				pick: pick.pickNumber,
-				team: TEAM_NAMES[currentPick.teamIndex],
-				player: pickedPlayer.name,
-				position: pickedPlayer.position,
-				slot,
+				pick: recordResult.pick.pickNumber,
+				team: TEAM_NAMES[recordResult.pick.teamIndex],
+				player: recordResult.pick.playerName,
+				position: recordResult.pick.position,
 				persona: personaName,
-				strategyShift: !!shiftTrigger,
-				draftComplete: boardState.draftComplete,
+				strategyShift: !!recordResult.strategyShift,
+				draftComplete: recordResult.draftComplete,
 			});
 
 			return {
 				success: true,
-				message: `${TEAM_NAMES[currentPick.teamIndex]} (${personaName}) selects ${pickedPlayer.name} (${pickedPlayer.position}) with pick #${currentPick.pickNumber}.`,
-				pick,
-				boardState,
-				draftComplete: boardState.draftComplete,
+				message: `${TEAM_NAMES[recordResult.pick.teamIndex]} (${personaName}) selects ${recordResult.pick.playerName} (${recordResult.pick.position}) with pick #${recordResult.pick.pickNumber}.`,
+				pick: recordResult.pick,
+				boardState: recordResult.boardState,
+				draftComplete: recordResult.draftComplete,
 			};
 		}
 

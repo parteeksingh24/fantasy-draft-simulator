@@ -1,9 +1,10 @@
 import { createRouter, sse } from '@agentuity/runtime';
 import { s } from '@agentuity/schema';
-import { streamText, stepCountIs } from 'ai';
+import { Output, streamText, stepCountIs } from 'ai';
 import commissioner from '../agent/commissioner';
 import { seedPlayers } from '../lib/seed-players';
-import { buildToolOrientedPrompt, fallbackPick } from '../lib/drafter-common';
+import { DrafterOutputZodSchema, buildToolOrientedPrompt, fallbackPick, parseDrafterOutputFromText } from '../lib/drafter-common';
+import { getDrafterGenerationMode } from '../lib/drafter-capabilities';
 import { createDrafterTools } from '../lib/drafter-tools';
 import { DRAFTER_MODELS, DRAFTER_MODEL_NAMES, getDrafterPrompt } from '../lib/drafter-models';
 import { recordPick } from '../lib/record-pick';
@@ -41,20 +42,28 @@ const api = createRouter();
 // In-flight seed promise to deduplicate concurrent seed calls
 let seedPromise: Promise<Player[]> | null = null;
 
-async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], vector: Parameters<typeof seedPlayers>[1], logger: { info: (msg: string, meta?: Record<string, unknown>) => void }): Promise<{ players: Player[]; cached: boolean }> {
+type SeedStatus = 'cached' | 'seeded' | 'joined_inflight';
+
+async function ensureSeeded(kv: Parameters<typeof seedPlayers>[0], vector: Parameters<typeof seedPlayers>[1], logger: { info: (msg: string, meta?: Record<string, unknown>) => void }): Promise<{ players: Player[]; status: SeedStatus }> {
 	const existing = await kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS);
 	if (existing.exists && existing.data.length > 0) {
-		return { players: existing.data, cached: true };
+		return { players: existing.data, status: 'cached' };
 	}
 
+	const startedHere = !seedPromise;
+
 	// Deduplicate: if a seed is already in-flight, join it
-	if (!seedPromise) {
+	if (startedHere) {
 		logger.info('Seeding player data');
 		seedPromise = seedPlayers(kv, vector).finally(() => { seedPromise = null; });
 	}
 
-	const players = await seedPromise;
-	return { players, cached: false };
+	const inFlightSeed = seedPromise;
+	if (!inFlightSeed) {
+		throw new Error('Seed promise missing while seeding players');
+	}
+	const players = await inFlightSeed;
+	return { players, status: startedHere ? 'seeded' : 'joined_inflight' };
 }
 
 // Health check
@@ -62,9 +71,15 @@ api.get('/health', (c) => c.json({ status: 'ok' }));
 
 // POST /draft/seed - Seed player data (Vector + KV). Skips if already seeded.
 api.post('/draft/seed', async (c) => {
-	const { players, cached } = await ensureSeeded(c.var.kv, c.var.vector, c.var.logger);
-	c.var.logger.info(cached ? 'Players already seeded, skipping' : 'Players seeded', { count: players.length });
-	return c.json({ seeded: true, cached, count: players.length });
+	const { players, status } = await ensureSeeded(c.var.kv, c.var.vector, c.var.logger);
+	if (status === 'cached') {
+		c.var.logger.debug('Players already seeded, skipping', { count: players.length });
+	} else if (status === 'joined_inflight') {
+		c.var.logger.debug('Player seeding in progress, joined existing operation', { count: players.length });
+	} else {
+		c.var.logger.info('Players seeded', { count: players.length });
+	}
+	return c.json({ seeded: true, cached: status === 'cached', status, count: players.length });
 });
 
 // POST /draft/start - Initialize a new draft
@@ -195,9 +210,10 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		// 2. Read persona assignments
 		const personaResult = await c.var.kv.get<PersonaAssignment[]>(KV_AGENT_STRATEGIES, 'persona-assignments');
 		const personaAssignments = personaResult.exists ? personaResult.data : [];
-		const teamPersona = personaAssignments.find((a) => a.teamIndex === currentPick.teamIndex);
-		const personaName = teamPersona?.persona ?? 'drafter-balanced';
-		const modelName = DRAFTER_MODEL_NAMES[personaName] ?? 'unknown';
+			const teamPersona = personaAssignments.find((a) => a.teamIndex === currentPick.teamIndex);
+			const personaName = teamPersona?.persona ?? 'drafter-balanced';
+			const modelName = DRAFTER_MODEL_NAMES[personaName] ?? 'unknown';
+			const generationMode = getDrafterGenerationMode(personaName);
 
 		// 3. Read roster and available players
 		const rosterResult = await c.var.kv.get<Roster>(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`);
@@ -214,20 +230,38 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		const availablePlayers = playersResult.data;
 
 		// Send initial metadata
-		await stream.writeSSE({
-			event: 'metadata',
-			data: JSON.stringify({
-				persona: personaName,
-				model: modelName,
-				teamIndex: currentPick.teamIndex,
-				teamName: TEAM_NAMES[currentPick.teamIndex],
-				pickNumber: currentPick.pickNumber,
+			await stream.writeSSE({
+				event: 'metadata',
+				data: JSON.stringify({
+					persona: personaName,
+					model: modelName,
+					generationMode,
+					teamIndex: currentPick.teamIndex,
+					teamName: TEAM_NAMES[currentPick.teamIndex],
+					pickNumber: currentPick.pickNumber,
 				round: currentPick.round,
 			}),
 		});
 
 		// 4. Run board analysis
 		const boardAnalysis = analyzeBoardState(boardState.picks, availablePlayers, currentPick.pickNumber);
+
+		// Emit board context so ThinkingPanel shows trends before reasoning
+		if (boardAnalysis.positionRuns.length > 0 || boardAnalysis.valueDrops.length > 0 || boardAnalysis.scarcity.length > 0) {
+			await stream.writeSSE({
+				event: 'board-context',
+				data: JSON.stringify({
+					positionRuns: boardAnalysis.positionRuns,
+					valueDrops: boardAnalysis.valueDrops.slice(0, 3).map((d) => ({
+						playerName: d.player.name,
+						position: d.player.position,
+						adpDiff: d.adpDiff,
+					})),
+					scarcity: boardAnalysis.scarcity,
+					summary: boardAnalysis.summary,
+				}),
+			});
+		}
 
 		// 5. Check roster eligibility; if no positions fit, use fallback
 		const availableSlots = getAvailableSlots(roster);
@@ -274,7 +308,10 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		}
 
 		// 6. Build tools and prompt for tool-calling LLM flow
-		const systemPrompt = getDrafterPrompt(personaName, !!boardAnalysis.summary);
+		const hasMeaningfulBoardSignals = boardAnalysis.positionRuns.length > 0
+			|| boardAnalysis.valueDrops.length > 0
+			|| boardAnalysis.scarcity.length > 0;
+		const systemPrompt = getDrafterPrompt(personaName, hasMeaningfulBoardSignals);
 		const model = DRAFTER_MODELS[personaName] ?? DRAFTER_MODELS['drafter-balanced']!;
 
 		const tools = createDrafterTools({
@@ -293,30 +330,53 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			boardState.picks,
 			currentPick.round,
 			currentPick.pickNumber,
-			boardAnalysis.summary,
+			hasMeaningfulBoardSignals ? boardAnalysis.summary : undefined,
 		);
 
-		const combinedPrompt = toolOrientedPrompt + `\n\nThink step-by-step about your pick choice, then output your final decision as a JSON code block:\n\n\`\`\`json\n{"playerId": "...", "playerName": "...", "position": "QB|RB|WR|TE", "reasoning": "one sentence summary", "confidence": 0.0-1.0}\n\`\`\`\n\nIMPORTANT: The JSON block MUST appear at the end of your response.`;
-
-		logger.info('Starting SSE stream for AI pick with tools', {
-			persona: personaName,
-			model: modelName,
-			pickNumber: currentPick.pickNumber,
-		});
+			logger.info('Starting SSE stream for AI pick with tools', {
+				persona: personaName,
+				model: modelName,
+				generationMode,
+				pickNumber: currentPick.pickNumber,
+				hasMeaningfulBoardSignals,
+			});
 
 		let fullText = '';
 		let streamError: string | null = null;
+			let structuredPick: {
+				playerId: string;
+				playerName: string;
+				position: 'QB' | 'RB' | 'WR' | 'TE';
+				reasoning: string;
+				confidence: number;
+			} | null = null;
+			let fallbackReason: 'model_error' | 'no_output' | 'invalid_json' | 'invalid_output' | null = null;
 
-		try {
-			const result = streamText({
-				model,
-				system: systemPrompt,
-				prompt: combinedPrompt,
-				tools,
-				stopWhen: stepCountIs(4),
-			});
+			try {
+				const result = generationMode === 'structured_with_tools'
+					? streamText({
+						model,
+						system: systemPrompt,
+						prompt: toolOrientedPrompt,
+						tools,
+						output: Output.object({
+							schema: DrafterOutputZodSchema,
+							name: 'draft_pick',
+							description: 'Final fantasy draft pick selection.',
+						}),
+						// Keep demo picks responsive while still allowing a short tool loop.
+						stopWhen: stepCountIs(4),
+					})
+					: streamText({
+						model,
+						system: systemPrompt,
+						prompt: toolOrientedPrompt,
+						tools,
+						// Keep demo picks responsive while still allowing a short tool loop.
+						stopWhen: stepCountIs(4),
+					});
 
-			for await (const part of result.fullStream) {
+				for await (const part of result.fullStream) {
 				switch (part.type) {
 					case 'text-delta':
 						fullText += part.text;
@@ -326,7 +386,11 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 					case 'tool-call':
 						await stream.writeSSE({
 							event: 'tool-call',
-							data: JSON.stringify({ name: part.toolName, args: part.input }),
+							data: JSON.stringify({
+								toolCallId: part.toolCallId,
+								name: part.toolName,
+								args: part.input,
+							}),
 						});
 						break;
 
@@ -334,132 +398,75 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 						await stream.writeSSE({
 							event: 'tool-result',
 							data: JSON.stringify({
+								toolCallId: part.toolCallId,
 								name: part.toolName,
 								result: summarizeToolResult(part.toolName, part.output),
 							}),
 						});
 						break;
+					}
 				}
-			}
-		} catch (err) {
-			streamError = String(err);
-			logger.warn('Streaming failed for model', { persona: personaName, model: modelName, error: streamError });
-			await stream.writeSSE({ event: 'thinking', data: `\n\n[Model error: ${streamError}]` });
-		}
 
-		// Parse JSON from the streamed text
+				const output = await result.output;
+				if (typeof output === 'string') {
+					if (fullText.length === 0) {
+						fullText = output;
+					}
+					structuredPick = parseDrafterOutputFromText(fullText);
+					if (!structuredPick) {
+						fallbackReason = fullText.trim().length > 0 ? 'invalid_json' : 'no_output';
+					}
+				} else {
+					structuredPick = output;
+				}
+			} catch (err) {
+				streamError = String(err);
+				fallbackReason = 'model_error';
+				logger.warn('Streaming failed for model', { persona: personaName, model: modelName, error: streamError });
+				await stream.writeSSE({ event: 'thinking', data: `\n\n[Model error: ${streamError}]` });
+			}
+
+		// Validate structured output against current board constraints
 		let pickedPlayer: Player | null = null;
-		let pickReasoning = fullText || 'AI reasoning unavailable.';
-		let pickConfidence = 0.7;
+		let pickReasoning = structuredPick?.reasoning || fullText || 'AI reasoning unavailable.';
+		let pickConfidence = Math.max(0, Math.min(1, structuredPick?.confidence ?? 0.7));
 		let parseStage = 'none';
 
-		// Stage 1: Try code block format: ```json ... ```
-		const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/);
-		if (jsonMatch?.[1]) {
-			try {
-				const parsed = JSON.parse(jsonMatch[1].trim());
-				// Coerce numeric playerId to string for matching
-				const parsedId = String(parsed.playerId);
-				const foundPlayer = availablePlayers.find((p) => p.playerId === parsedId);
-				if (foundPlayer && canDraftPosition(roster, foundPlayer.position)) {
-					pickedPlayer = foundPlayer;
-					pickReasoning = fullText.split('```json')[0]?.trim() || parsed.reasoning || fullText;
-					pickConfidence = Math.max(0, Math.min(1, parsed.confidence ?? 0.7));
-					parseStage = 'code-block-id';
-				} else if (!foundPlayer && parsed.playerName) {
-					// Stage 1b: playerId didn't match, try matching by playerName
-					const nameMatch = availablePlayers.find(
-						(p) => p.name.toLowerCase() === String(parsed.playerName).toLowerCase() && canDraftPosition(roster, p.position),
-					);
-					if (nameMatch) {
-						pickedPlayer = nameMatch;
-						pickReasoning = fullText.split('```json')[0]?.trim() || parsed.reasoning || fullText;
-						pickConfidence = Math.max(0, Math.min(1, parsed.confidence ?? 0.7));
-						parseStage = 'code-block-name';
-						logger.info('Matched by playerName instead of playerId', {
-							parsedId,
-							parsedName: parsed.playerName,
-							matchedId: nameMatch.playerId,
-						});
-					}
-				}
-			} catch { /* JSON parse failed, try next format */ }
-		}
+		if (structuredPick) {
+			const idMatch = availablePlayers.find((p) => p.playerId === structuredPick.playerId);
+			const nameMatch = idMatch
+				? null
+				: availablePlayers.find((p) => p.name.toLowerCase() === structuredPick.playerName.toLowerCase());
+			const selectedPlayer = idMatch ?? nameMatch ?? null;
+			const fitsRoster = selectedPlayer ? canDraftPosition(roster, selectedPlayer.position) : false;
 
-		// Stage 2: Try raw JSON format: {"playerId": ...} (handles both quoted and numeric values)
-		if (!pickedPlayer) {
-			const rawJsonMatch = fullText.match(/\{[\s\S]*?"playerId"\s*:\s*(?:"[^"]*?"|[0-9]+)[\s\S]*?\}/);
-			if (rawJsonMatch) {
-				try {
-					const parsed = JSON.parse(rawJsonMatch[0]);
-					const parsedId = String(parsed.playerId);
-					const foundPlayer = availablePlayers.find((p) => p.playerId === parsedId);
-					if (foundPlayer && canDraftPosition(roster, foundPlayer.position)) {
-						pickedPlayer = foundPlayer;
-						pickReasoning = parsed.reasoning || fullText.split(rawJsonMatch[0])[0]?.trim() || fullText;
-						pickConfidence = Math.max(0, Math.min(1, parsed.confidence ?? 0.7));
-						parseStage = 'raw-json-id';
-					} else if (!foundPlayer && parsed.playerName) {
-						// Stage 2b: playerId didn't match, try matching by playerName
-						const nameMatch = availablePlayers.find(
-							(p) => p.name.toLowerCase() === String(parsed.playerName).toLowerCase() && canDraftPosition(roster, p.position),
-						);
-						if (nameMatch) {
-							pickedPlayer = nameMatch;
-							pickReasoning = parsed.reasoning || fullText.split(rawJsonMatch[0])[0]?.trim() || fullText;
-							pickConfidence = Math.max(0, Math.min(1, parsed.confidence ?? 0.7));
-							parseStage = 'raw-json-name';
-							logger.info('Matched by playerName instead of playerId (raw JSON)', {
-								parsedId,
-								parsedName: parsed.playerName,
-								matchedId: nameMatch.playerId,
-							});
-						}
-					}
-				} catch { /* raw JSON parse also failed */ }
-			}
-		}
-
-		// Stage 3: No JSON found at all, try to find a player name mentioned in the text
-		if (!pickedPlayer && fullText.length > 0) {
-			// Sort available players by rank (best first), then check if any name appears in the text
-			const sortedByRank = [...availablePlayers]
-				.filter((p) => canDraftPosition(roster, p.position))
-				.sort((a, b) => a.rank - b.rank);
-			for (const player of sortedByRank) {
-				if (fullText.includes(player.name)) {
-					pickedPlayer = player;
-					pickReasoning = fullText;
-					pickConfidence = 0.5;
-					parseStage = 'text-name-match';
-					logger.info('Matched player by name found in LLM text', {
-						player: player.name,
-						playerId: player.playerId,
+				if (selectedPlayer && fitsRoster) {
+					pickedPlayer = selectedPlayer;
+					parseStage = idMatch ? 'structured-output-id' : 'structured-output-name';
+				logger.info('LLM structured output validated', {
+					parseStage,
+					player: selectedPlayer.name,
+					playerId: selectedPlayer.playerId,
+				});
+				} else {
+					fallbackReason = 'invalid_output';
+					logger.warn('LLM structured output did not map to an eligible available player', {
+						playerId: structuredPick.playerId,
+						playerName: structuredPick.playerName,
+						matchedByName: !!nameMatch,
+						generationMode,
 					});
-					break;
 				}
+			} else {
+				logger.warn('No structured pick output from model, entering fallback', {
+					streamError,
+					fullTextLength: fullText.length,
+					generationMode,
+					fallbackReason,
+				});
 			}
-		}
 
-		// Log parsing result before fallback
-		if (!pickedPlayer) {
-			logger.warn('LLM pick parsing failed, entering fallback', {
-				fullTextLength: fullText.length,
-				hasCodeBlock: !!jsonMatch,
-				hasRawJson: !!fullText.match(/\{[\s\S]*?"playerId"\s*:\s*(?:"[^"]*?"|[0-9]+)[\s\S]*?\}/),
-				firstFewChars: fullText.substring(0, 200),
-				streamError,
-				parseStage,
-			});
-		} else {
-			logger.info('LLM pick parsed successfully', {
-				parseStage,
-				player: pickedPlayer.name,
-				playerId: pickedPlayer.playerId,
-			});
-		}
-
-		// Stage 4: Deterministic fallback (best available by rank)
+		// 7. Deterministic fallback (best available by rank)
 		if (!pickedPlayer) {
 			pickedPlayer = fallbackPick(availablePlayers, roster);
 			if (!pickedPlayer) {
@@ -468,11 +475,19 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 				return;
 			}
 			const errorContext = streamError ? ` (model error: ${streamError})` : '';
-			pickReasoning = `Fallback: ${pickedPlayer.name} is the highest-ranked available (Rank ${pickedPlayer.rank}).${errorContext}`;
-			pickConfidence = 0.3;
-			parseStage = 'fallback';
-			logger.warn('Using fallback pick', { persona: personaName, model: modelName, player: pickedPlayer.name, streamError, parseStage });
-		}
+				pickReasoning = `Fallback: ${pickedPlayer.name} is the highest-ranked available (Rank ${pickedPlayer.rank}).${errorContext}`;
+				pickConfidence = 0.3;
+				parseStage = 'fallback';
+				logger.warn('Using fallback pick', {
+					persona: personaName,
+					model: modelName,
+					player: pickedPlayer.name,
+					streamError,
+					parseStage,
+					generationMode,
+					fallbackReason: fallbackReason ?? 'invalid_output',
+				});
+			}
 
 		// 8. Record the pick
 		const result = await recordPick(c.var.kv, {
@@ -490,6 +505,14 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: result.message }) });
 			stream.close();
 			return;
+		}
+
+		// Emit strategy shift event if one was detected
+		if (result.strategyShift) {
+			await stream.writeSSE({
+				event: 'strategy-shift',
+				data: JSON.stringify(result.strategyShift),
+			});
 		}
 
 		// Fetch updated rosters for the frontend (non-critical, frontend will refresh anyway)

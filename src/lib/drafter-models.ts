@@ -16,7 +16,7 @@ export const DRAFTER_MODELS: Record<string, LanguageModel> = {
 	'drafter-qb-first': xai('grok-3-fast'),
 	'drafter-stud-rb': openai('gpt-5-nano'),
 	'drafter-value-hunter': anthropic('claude-haiku-4-5'),
-	'drafter-stack-builder': deepseek('deepseek-chat'),
+	'drafter-stack-builder': deepseek('deepseek-reasoner'),
 	'drafter-te-premium': moonshotai('kimi-k2.5'),
 	'drafter-youth-movement': anthropic('claude-haiku-4-5'),
 	'drafter-contrarian': xai('grok-4-1-fast-reasoning'),
@@ -31,7 +31,7 @@ export const DRAFTER_MODEL_NAMES: Record<string, string> = {
 	'drafter-qb-first': 'grok-3-fast',
 	'drafter-stud-rb': 'gpt-5-nano',
 	'drafter-value-hunter': 'claude-haiku-4-5',
-	'drafter-stack-builder': 'deepseek-chat',
+	'drafter-stack-builder': 'deepseek-reasoner',
 	'drafter-te-premium': 'kimi-k2.5',
 	'drafter-youth-movement': 'claude-haiku-4-5',
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',
@@ -41,7 +41,7 @@ export const DRAFTER_MODEL_NAMES: Record<string, string> = {
 
 const BOARD_ANALYSIS_SUFFIX = `\n\nIMPORTANT - Board dynamics detected. Factor the board analysis into your decision. You may shift your strategy if the situation calls for it. If you do shift strategy, explain why in your reasoning.`;
 
-const JSON_SUFFIX = `\n\nYou have access to 4 tools: searchPlayers (semantic search), getTopAvailable (rank-sorted list), analyzeBoardTrends (position runs, value drops, scarcity), and getTeamRoster (view any team's roster). Use them to research before picking.\n\nRespond with valid JSON: {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
+const JSON_SUFFIX = `\n\nYou have access to 4 tools: searchPlayers (semantic search), getTopAvailable (rank-sorted list), analyzeBoardTrends (position runs, value drops, scarcity), and getTeamRoster (view any team's roster). Use them to research before picking.\n\nTool discipline:\n- Start with getTopAvailable.\n- Avoid repeating identical searchPlayers queries.\n- Call analyzeBoardTrends at most once unless context changes.\n\nRespond with valid JSON: {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
 
 export const DRAFTER_PROMPTS: Record<string, string> = {
 	'drafter-balanced': `You are a fantasy football drafter with a balanced strategy. You value Best Player Available (BPA) while considering positional needs. Make smart, strategic picks.
@@ -132,7 +132,7 @@ When no trends are detected (no runs, no drops, no scarcity), you feel uncertain
 /**
  * Get the system prompt for a drafter, optionally augmented with board analysis context.
  */
-export function getDrafterPrompt(persona: string, hasBoardAnalysis: boolean): string {
+export function getDrafterPrompt(persona: string, hasMeaningfulBoardSignals: boolean): string {
 	const base = DRAFTER_PROMPTS[persona] ?? DRAFTER_PROMPTS['drafter-balanced']!;
-	return hasBoardAnalysis ? base + BOARD_ANALYSIS_SUFFIX : base;
+	return hasMeaningfulBoardSignals ? base + BOARD_ANALYSIS_SUFFIX : base;
 }

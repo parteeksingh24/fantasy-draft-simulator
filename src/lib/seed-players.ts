@@ -22,61 +22,107 @@ interface SleeperPlayer {
 
 type SleeperResponse = Record<string, SleeperPlayer>;
 
-// NFL team bye weeks for 2025 (approximated)
-const BYE_WEEKS: Record<string, number> = {
-	ARI: 11, ATL: 12, BAL: 14, BUF: 12,
-	CAR: 11, CHI: 7, CIN: 12, CLE: 10,
-	DAL: 7, DEN: 14, DET: 9, GB: 10,
-	HOU: 14, IND: 14, JAX: 12, KC: 6,
-	LAC: 5, LAR: 6, LV: 10, MIA: 6,
-	MIN: 6, NE: 14, NO: 12, NYG: 11,
-	NYJ: 12, PHI: 7, PIT: 9, SEA: 10,
-	SF: 9, TB: 11, TEN: 5, WAS: 14,
+// Keep bye weeks keyed by NFL season year so updates are localized.
+// If the current season is not listed yet, we fall back to the latest known season map.
+const FALLBACK_BYE_WEEK_SEASON = 2025;
+const BYE_WEEKS_BY_SEASON: Record<number, Record<string, number>> = {
+	2025: {
+		ARI: 11, ATL: 12, BAL: 14, BUF: 12,
+		CAR: 11, CHI: 7, CIN: 12, CLE: 10,
+		DAL: 7, DEN: 14, DET: 9, GB: 10,
+		HOU: 14, IND: 14, JAX: 12, KC: 6,
+		LAC: 5, LAR: 6, LV: 10, MIA: 6,
+		MIN: 6, NE: 14, NO: 12, NYG: 11,
+		NYJ: 12, PHI: 7, PIT: 9, SEA: 10,
+		SF: 9, TB: 11, TEN: 5, WAS: 14,
+	},
 };
 
 const DEFAULT_BYE_WEEK = 8;
 const SLEEPER_API_URL = 'https://api.sleeper.app/v1/players/nfl';
 const VALID_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 const TOP_N_PLAYERS = 150;
+const SLEEPER_FETCH_TIMEOUT_MS = 8000;
+const SLEEPER_FETCH_RETRIES = 2;
+const SLEEPER_RETRY_BASE_DELAY_MS = 400;
+
+function getLikelyNflSeasonYear(date = new Date()): number {
+	// Jan/Feb generally still map to the previous NFL season context.
+	const month = date.getUTCMonth() + 1;
+	const year = date.getUTCFullYear();
+	return month <= 2 ? year - 1 : year;
+}
+
+function resolveByeWeek(team: string, seasonYear = getLikelyNflSeasonYear()): number {
+	const seasonMap = BYE_WEEKS_BY_SEASON[seasonYear]
+		?? BYE_WEEKS_BY_SEASON[FALLBACK_BYE_WEEK_SEASON];
+	if (!seasonMap) return DEFAULT_BYE_WEEK;
+	return seasonMap[team] ?? DEFAULT_BYE_WEEK;
+}
+
+function isValidPosition(position: string): position is (typeof VALID_POSITIONS)[number] {
+	return VALID_POSITIONS.includes(position as (typeof VALID_POSITIONS)[number]);
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Fetch all players from Sleeper API and filter to fantasy-relevant players.
  */
 async function fetchSleeperPlayers(): Promise<SleeperPlayer[]> {
-	const response = await fetch(SLEEPER_API_URL);
+	let lastError: unknown;
 
-	if (!response.ok) {
-		throw new Error(`Sleeper API error: ${response.status} ${response.statusText}`);
+	for (let attempt = 0; attempt <= SLEEPER_FETCH_RETRIES; attempt++) {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), SLEEPER_FETCH_TIMEOUT_MS);
+
+		try {
+			const response = await fetch(SLEEPER_API_URL, { signal: controller.signal });
+
+			if (!response.ok) {
+				throw new Error(`Sleeper API error: ${response.status} ${response.statusText}`);
+			}
+
+			const data: SleeperResponse = await response.json();
+
+			return Object.values(data)
+				.filter((p) => {
+					// Must be a valid fantasy position
+					if (!isValidPosition(p.position)) return false;
+
+					// Must be active
+					if (!p.active) return false;
+
+					// Check status if available
+					if (p.status && p.status !== 'Active') return false;
+
+					// Must have a search rank (for sorting)
+					if (!p.search_rank || p.search_rank === 999999) return false;
+
+					// Must have a current NFL team (filter out free agents and retired)
+					if (!p.team || p.team === '') return false;
+
+					// Must have recent experience (filter out long-retired players)
+					if (p.years_exp !== undefined && p.years_exp > 15) return false;
+
+					return true;
+				})
+				.sort((a, b) => a.search_rank - b.search_rank)
+				.slice(0, TOP_N_PLAYERS);
+		} catch (error) {
+			lastError = error;
+			if (attempt < SLEEPER_FETCH_RETRIES) {
+				await sleep(SLEEPER_RETRY_BASE_DELAY_MS * (attempt + 1));
+			}
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 
-	const data: SleeperResponse = await response.json();
-
-	const players = Object.values(data)
-		.filter((p) => {
-			// Must be a valid fantasy position
-			if (!VALID_POSITIONS.includes(p.position as any)) return false;
-
-			// Must be active
-			if (!p.active) return false;
-
-			// Check status if available
-			if (p.status && p.status !== 'Active') return false;
-
-			// Must have a search rank (for sorting)
-			if (!p.search_rank || p.search_rank === 999999) return false;
-
-			// Must have a current NFL team (filter out free agents and retired)
-			if (!p.team || p.team === '') return false;
-
-			// Must have recent experience (filter out long-retired players)
-			if (p.years_exp !== undefined && p.years_exp > 15) return false;
-
-			return true;
-		})
-		.sort((a, b) => a.search_rank - b.search_rank)
-		.slice(0, TOP_N_PLAYERS);
-
-	return players;
+	const message = lastError instanceof Error ? lastError.message : String(lastError);
+	throw new Error(`Sleeper API request failed after ${SLEEPER_FETCH_RETRIES + 1} attempts: ${message}`);
 }
 
 /**
@@ -94,9 +140,9 @@ function calculateTier(searchRank: number): number {
 /**
  * Map a Sleeper player to our Player type.
  */
-function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer, index: number): Player {
+function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer): Player {
 	const team = sleeperPlayer.team || 'FA';
-	const byeWeek = BYE_WEEKS[team] || DEFAULT_BYE_WEEK;
+	const byeWeek = resolveByeWeek(team);
 	const rank = sleeperPlayer.search_rank;
 	const tier = calculateTier(sleeperPlayer.search_rank);
 
@@ -163,7 +209,7 @@ export async function seedPlayers(kv: KeyValueStorage, vector: VectorStorage): P
 	}
 
 	// Map to our Player type
-	const players = sleeperPlayers.map((sp, index) => mapSleeperToPlayer(sp, index));
+	const players = sleeperPlayers.map((sp) => mapSleeperToPlayer(sp));
 
 	// Store available player list in KV (primary source of truth, fast)
 	await kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null });

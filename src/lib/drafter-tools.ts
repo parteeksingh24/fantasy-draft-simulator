@@ -49,6 +49,15 @@ interface PlayerResult {
 	value: number;
 }
 
+interface SearchPlayersResult {
+	status: 'ok' | 'vector_not_ready';
+	query: string;
+	position?: string;
+	results: PlayerResult[];
+	source: 'vector' | 'rank-fallback';
+	message?: string;
+}
+
 // ---------------------------------------------------------------------------
 // createDrafterTools
 // ---------------------------------------------------------------------------
@@ -60,7 +69,7 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 	return {
 		searchPlayers: tool({
 			description:
-				'Semantic search for players via Vector storage. Use this to find players matching a natural language query (e.g. "elite young wide receiver", "safe veteran quarterback"). Results are filtered to available players that fit your roster.',
+				'Semantic search for players via Vector storage. Use this to find players matching a natural language query (e.g. "elite young wide receiver", "safe veteran quarterback"). Returns { status, results, source } and falls back to rank-based results if Vector is unavailable.',
 			inputSchema: z.object({
 				query: z.string().describe('Natural language search query'),
 				position: z
@@ -73,40 +82,74 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 					.default(10)
 					.describe('Max results to return (default 10)'),
 			}),
-			execute: async ({ query, position, limit }): Promise<PlayerResult[]> => {
-				const results = await deps.vector.search<PlayerMetadata>(VECTOR_PLAYERS, {
-					query,
-					limit: limit ?? 10,
-				});
+			execute: async ({ query, position, limit }): Promise<SearchPlayersResult> => {
+				const normalizedLimit = limit ?? 10;
+				const rankFallback = deps.availablePlayers
+					.filter((p) => !position || p.position === position)
+					.filter((p) => canDraftPosition(deps.roster, p.position))
+					.sort((a, b) => a.rank - b.rank)
+					.slice(0, normalizedLimit)
+					.map((p) => ({
+						playerId: p.playerId,
+						name: p.name,
+						position: p.position,
+						team: p.team,
+						rank: p.rank,
+						tier: p.tier,
+						age: p.age,
+						value: deps.pickNumber - p.rank,
+					}));
 
-				const players: PlayerResult[] = [];
-
-				for (const result of results) {
-					if (!result.metadata) continue;
-					const meta = result.metadata;
-
-					// Only include players still on the board
-					if (!availableSet.has(meta.playerId)) continue;
-
-					// Optional position filter
-					if (position && meta.position !== position) continue;
-
-					// Check roster eligibility
-					if (!canDraftPosition(deps.roster, meta.position)) continue;
-
-					players.push({
-						playerId: meta.playerId,
-						name: meta.name,
-						position: meta.position,
-						team: meta.team,
-						rank: meta.rank,
-						tier: meta.tier,
-						age: meta.age,
-						value: deps.pickNumber - meta.rank,
+				try {
+					const results = await deps.vector.search<PlayerMetadata>(VECTOR_PLAYERS, {
+						query,
+						limit: normalizedLimit,
 					});
-				}
 
-				return players;
+					const players: PlayerResult[] = [];
+
+					for (const result of results) {
+						if (!result.metadata) continue;
+						const meta = result.metadata;
+
+						// Only include players still on the board
+						if (!availableSet.has(meta.playerId)) continue;
+
+						// Optional position filter
+						if (position && meta.position !== position) continue;
+
+						// Check roster eligibility
+						if (!canDraftPosition(deps.roster, meta.position)) continue;
+
+						players.push({
+							playerId: meta.playerId,
+							name: meta.name,
+							position: meta.position,
+							team: meta.team,
+							rank: meta.rank,
+							tier: meta.tier,
+							age: meta.age,
+							value: deps.pickNumber - meta.rank,
+						});
+					}
+
+					return {
+						status: 'ok',
+						query,
+						...(position ? { position } : {}),
+						results: players,
+						source: 'vector',
+					};
+				} catch (err) {
+					return {
+						status: 'vector_not_ready',
+						query,
+						...(position ? { position } : {}),
+						results: rankFallback,
+						source: 'rank-fallback',
+						message: `Vector search unavailable, using deterministic rank fallback: ${String(err)}`,
+					};
+				}
 			},
 		}),
 

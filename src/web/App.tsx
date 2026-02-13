@@ -4,7 +4,7 @@ import './App.css';
 import { cn } from './lib/utils';
 import { api } from './lib/api';
 import type { BoardState, Player, Roster, PersonaAssignment, StrategyShift } from './lib/types';
-import { TEAM_NAMES, NUM_TEAMS } from './lib/types';
+import { TEAM_NAMES, NUM_TEAMS, PERSONA_DISPLAY_NAMES } from './lib/types';
 import { DraftBoard } from './components/DraftBoard';
 import { DraftControls } from './components/DraftControls';
 import { PlayerPicker } from './components/PlayerPicker';
@@ -16,6 +16,8 @@ import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from './components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
+
+const PRESEED_SESSION_KEY = 'fds_preseed_done';
 
 export function App() {
 	// Draft state
@@ -39,6 +41,9 @@ export function App() {
 	// SSE streaming hook
 	const stream = useAdvanceStream();
 
+	// Latest strategy shift summary (inline card, no global top banner)
+	const [shiftBanner, setShiftBanner] = useState<StrategyShift | null>(null);
+
 	// Panel visibility with exit delay
 	const [showThinkingPanel, setShowThinkingPanel] = useState(false);
 
@@ -54,6 +59,12 @@ export function App() {
 	// Refs to prevent duplicate concurrent calls
 	const advancingRef = useRef(false);
 	const startingRef = useRef(false);
+	const preseedStartedRef = useRef(false);
+	const boardRef = useRef<BoardState | null>(null);
+
+	useEffect(() => {
+		boardRef.current = board;
+	}, [board]);
 
 	// Fetch board state from the server
 	const refreshBoard = useCallback(async () => {
@@ -97,13 +108,38 @@ export function App() {
 
 	// Hydrate from server on mount (resume in-progress draft)
 	useEffect(() => {
+		let ignore = false;
+
 		async function hydrate() {
 			// Pre-seed player data in the background so it's ready when the user clicks Start.
 			// This fetches from Sleeper API + writes to KV. The endpoint is idempotent (skips if cached).
-			api.seedPlayers().catch(() => {});
+			if (!preseedStartedRef.current) {
+				preseedStartedRef.current = true;
+
+				let shouldPreseed = true;
+				try {
+					shouldPreseed = window.sessionStorage.getItem(PRESEED_SESSION_KEY) !== '1';
+					if (shouldPreseed) {
+						window.sessionStorage.setItem(PRESEED_SESSION_KEY, '1');
+					}
+				} catch {
+					// Ignore sessionStorage access failures and fall back to ref-only guard.
+				}
+
+				if (shouldPreseed) {
+					api.seedPlayers().catch(() => {
+						try {
+							window.sessionStorage.removeItem(PRESEED_SESSION_KEY);
+						} catch {
+							// Ignore storage cleanup errors.
+						}
+					});
+				}
+			}
 
 			try {
 				const data = await api.getBoard();
+				if (ignore) return;
 				setBoard(data.board);
 				setRosters(data.rosters);
 				setHumanTeamIndex(data.board.settings.humanTeamIndex);
@@ -113,6 +149,7 @@ export function App() {
 					api.getPlayers(),
 					api.getStrategies(),
 				]);
+				if (ignore) return;
 				if (playersResult.status === 'fulfilled') {
 					setPlayers(playersResult.value.players);
 				}
@@ -124,12 +161,14 @@ export function App() {
 					setError('Draft resumed, but some data failed to load. Try refreshing.');
 				}
 			} catch (err) {
+				if (ignore) return;
 				console.warn('No draft in progress:', err);
 			} finally {
-				setHydrating(false);
+				if (!ignore) setHydrating(false);
 			}
 		}
 		hydrate();
+		return () => { ignore = true; };
 	}, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// Reset all state for a new draft
@@ -139,6 +178,7 @@ export function App() {
 		setPlayers([]);
 		setPersonas(null);
 		setShifts([]);
+		setShiftBanner(null);
 		setHumanTeamIndex(null);
 		setAdvancing(false);
 		setPicking(false);
@@ -153,11 +193,12 @@ export function App() {
 		startingRef.current = true;
 		setStarting(true);
 		setError(null);
-		try {
-			// Resolve random position at start time
-			const resolvedIndex = humanTeamIndex ?? Math.floor(Math.random() * NUM_TEAMS);
-			setHumanTeamIndex(resolvedIndex);
-			const result = await api.startDraft(resolvedIndex);
+			try {
+				// Resolve random position at start time
+				const resolvedIndex = humanTeamIndex ?? Math.floor(Math.random() * NUM_TEAMS);
+				setHumanTeamIndex(resolvedIndex);
+				setShiftBanner(null);
+				const result = await api.startDraft(resolvedIndex);
 			// Use enriched response directly (no follow-up API calls needed)
 			setBoard(result.boardState);
 			setPlayers(result.players);
@@ -203,6 +244,14 @@ export function App() {
 		}
 	}, [stream.boardState, stream.rosters, stream.draftComplete, refreshPlayers, refreshStrategies]);
 
+	// Handle strategy shift from SSE: update latest card and append to history
+	useEffect(() => {
+		if (stream.strategyShift) {
+			setShiftBanner(stream.strategyShift);
+			setShifts((prev) => [...prev, stream.strategyShift!]);
+		}
+	}, [stream.strategyShift]);
+
 	// Reset advancing state when stream finishes
 	useEffect(() => {
 		if (!stream.isStreaming && advancingRef.current) {
@@ -246,6 +295,8 @@ export function App() {
 
 		const timer = setTimeout(() => {
 			if (advancingRef.current) return;
+			const latestBoard = boardRef.current;
+			if (!latestBoard || latestBoard.draftComplete || latestBoard.currentPick.isHuman) return;
 			handleAdvance();
 		}, 1500);
 
@@ -458,10 +509,35 @@ export function App() {
 								)}
 							</div>
 						</div>
-					) : (
-						<div className="flex flex-col gap-4">
-							{/* Top section: Draft Board (full width, prominent) */}
-							<DraftBoard
+						) : (
+							<div className="flex flex-col gap-4">
+								{shiftBanner && (
+									<Card className="bg-yellow-500/10 border-yellow-500/25 py-3">
+										<CardContent className="px-4">
+											<div className="flex items-start justify-between gap-3">
+												<div className="flex items-center gap-2">
+													<Badge className="bg-yellow-500/20 border-yellow-500/30 text-yellow-300 text-[10px] h-auto py-0.5 px-1.5">
+														!
+													</Badge>
+													<div className="min-w-0">
+														<p className="text-xs text-yellow-300 font-medium">
+															Strategy Shift • Pick #{shiftBanner.pickNumber}
+														</p>
+														<p className="text-xs text-yellow-400/90 truncate">
+															{PERSONA_DISPLAY_NAMES[shiftBanner.persona] ?? shiftBanner.persona} ({TEAM_NAMES[shiftBanner.teamIndex]}) changed approach
+														</p>
+													</div>
+												</div>
+												<span className="text-xs text-yellow-200/80 max-w-[48rem] truncate">
+													{shiftBanner.trigger}
+												</span>
+											</div>
+										</CardContent>
+									</Card>
+								)}
+
+								{/* Top section: Draft Board (full width, prominent) */}
+								<DraftBoard
 								board={board}
 								humanTeamIndex={resolvedTeamIndex}
 								personas={personas}
@@ -473,7 +549,7 @@ export function App() {
 							{!draftComplete && (
 								<div className="flex gap-4" style={{ height: '420px' }}>
 									{/* Left: Player picker (always visible, smoothly expands) */}
-									<motion.div layout className="flex-1 min-w-0 overflow-hidden">
+									<div className="flex-1 min-w-0 overflow-hidden">
 										{playersLoading && players.length === 0 ? (
 											<div className="h-full flex items-center justify-center bg-gray-900/80 rounded-xl border border-gray-800/50">
 												<p className="text-sm text-gray-600">Loading players...</p>
@@ -487,7 +563,7 @@ export function App() {
 												picking={picking}
 											/>
 										)}
-									</motion.div>
+									</div>
 
 									{/* Right: Thinking panel (slides in/out) */}
 									<AnimatePresence>
@@ -507,6 +583,7 @@ export function App() {
 													streamModel={stream.model}
 													streamTeamIndex={stream.teamIndex}
 													toolCalls={stream.toolCalls}
+													boardContext={stream.boardContext}
 												/>
 											</motion.div>
 										)}

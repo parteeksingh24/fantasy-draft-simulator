@@ -3,8 +3,15 @@
  * Uses native EventSource to connect to GET /api/draft/advance/stream.
  * Accumulates reasoning tokens and delivers the final pick.
  */
-import { useState, useCallback, useRef } from 'react';
-import type { BoardState, Pick, Roster, ToolCallRecord } from '../lib/types';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import type { BoardState, Pick, Roster, ToolCallRecord, StrategyShift } from '../lib/types';
+
+export interface BoardContext {
+	positionRuns: { position: string; count: number; window: number }[];
+	valueDrops: { playerName: string; position: string; adpDiff: number }[];
+	scarcity: { position: string; remaining: number }[];
+	summary: string;
+}
 
 interface AdvanceStreamState {
 	isStreaming: boolean;
@@ -18,6 +25,36 @@ interface AdvanceStreamState {
 	draftComplete: boolean | undefined;
 	error: string | null;
 	toolCalls: ToolCallRecord[];
+	boardContext: BoardContext | null;
+	strategyShift: StrategyShift | null;
+}
+
+function attachToolResult(
+	toolCalls: ToolCallRecord[],
+	data: { name: string; result: unknown; toolCallId?: string },
+): ToolCallRecord[] {
+	const next = [...toolCalls];
+
+	if (data.toolCallId) {
+		for (let i = next.length - 1; i >= 0; i--) {
+			const call = next[i]!;
+			if (call.toolCallId === data.toolCallId && call.result === undefined) {
+				next[i] = { ...call, result: data.result };
+				return next;
+			}
+		}
+	}
+
+	// Fallback for older payloads that only include tool name.
+	for (let i = next.length - 1; i >= 0; i--) {
+		const call = next[i]!;
+		if (call.name === data.name && call.result === undefined) {
+			next[i] = { ...call, result: data.result };
+			return next;
+		}
+	}
+
+	return next;
 }
 
 export function useAdvanceStream() {
@@ -33,6 +70,8 @@ export function useAdvanceStream() {
 		draftComplete: undefined,
 		error: null,
 		toolCalls: [],
+		boardContext: null,
+		strategyShift: null,
 	});
 
 	const eventSourceRef = useRef<EventSource | null>(null);
@@ -43,6 +82,10 @@ export function useAdvanceStream() {
 			eventSourceRef.current = null;
 		}
 	}, []);
+
+	useEffect(() => () => {
+		close();
+	}, [close]);
 
 	const startStream = useCallback(() => {
 		// Close any existing connection
@@ -61,6 +104,8 @@ export function useAdvanceStream() {
 			draftComplete: undefined,
 			error: null,
 			toolCalls: [],
+			boardContext: null,
+			strategyShift: null,
 		});
 
 		const es = new EventSource('/api/draft/advance/stream');
@@ -89,10 +134,18 @@ export function useAdvanceStream() {
 
 		es.addEventListener('tool-call', (e) => {
 			try {
-				const data = JSON.parse(e.data) as { name: string; args: Record<string, unknown> };
+				const data = JSON.parse(e.data) as { name: string; args?: Record<string, unknown>; toolCallId?: string };
 				setState((prev) => ({
 					...prev,
-					toolCalls: [...prev.toolCalls, { name: data.name, args: data.args, timestamp: Date.now() }],
+					toolCalls: [
+						...prev.toolCalls,
+						{
+							name: data.name,
+							args: data.args ?? {},
+							toolCallId: data.toolCallId,
+							timestamp: Date.now(),
+						},
+					],
 				}));
 			} catch {
 				// Ignore parse errors
@@ -101,13 +154,29 @@ export function useAdvanceStream() {
 
 		es.addEventListener('tool-result', (e) => {
 			try {
-				const data = JSON.parse(e.data) as { name: string; result: unknown };
+				const data = JSON.parse(e.data) as { name: string; result: unknown; toolCallId?: string };
 				setState((prev) => ({
 					...prev,
-					toolCalls: prev.toolCalls.map((tc) =>
-						tc.name === data.name && !tc.result ? { ...tc, result: data.result } : tc,
-					),
+					toolCalls: attachToolResult(prev.toolCalls, data),
 				}));
+			} catch {
+				// Ignore parse errors
+			}
+		});
+
+		es.addEventListener('board-context', (e) => {
+			try {
+				const data = JSON.parse(e.data);
+				setState((prev) => ({ ...prev, boardContext: data }));
+			} catch {
+				// Ignore parse errors
+			}
+		});
+
+		es.addEventListener('strategy-shift', (e) => {
+			try {
+				const data = JSON.parse(e.data);
+				setState((prev) => ({ ...prev, strategyShift: data }));
 			} catch {
 				// Ignore parse errors
 			}
@@ -179,6 +248,8 @@ export function useAdvanceStream() {
 			draftComplete: undefined,
 			error: null,
 			toolCalls: [],
+			boardContext: null,
+			strategyShift: null,
 		});
 	}, [close]);
 

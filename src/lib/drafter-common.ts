@@ -4,10 +4,11 @@
  * then call createAgent() directly at the file level (required for build tool detection).
  */
 import { s } from '@agentuity/schema';
-import { generateText, stepCountIs } from 'ai';
+import { Output, generateText, stepCountIs } from 'ai';
 import type { LanguageModel } from 'ai';
 import type { VectorStorage } from '@agentuity/core';
 import type { KeyValueStorage } from '@agentuity/core';
+import { z } from 'zod';
 import {
 	type Player,
 	type Pick,
@@ -23,6 +24,7 @@ import {
 	canDraftPosition,
 } from './types';
 import { createDrafterTools } from './drafter-tools';
+import { getDrafterGenerationMode } from './drafter-capabilities';
 
 // ---------------------------------------------------------------------------
 // Schemas (shared by all drafter agents)
@@ -47,9 +49,55 @@ export const DrafterOutputSchema = s.object({
 	confidence: s.number().describe('Confidence score 0-1'),
 });
 
+// Structured output schema for AI SDK output: Output.object(...)
+export const DrafterOutputZodSchema = z.object({
+	playerId: z.string().describe('Selected player ID'),
+	playerName: z.string().describe('Selected player name'),
+	position: z.enum(POSITIONS).describe('Selected player position'),
+	reasoning: z.string().describe('Why this player was selected'),
+	confidence: z.number().describe('Confidence score 0-1'),
+});
+
 // Inferred types for convenience
 export type DrafterInput = s.infer<typeof DrafterInputSchema>;
 export type DrafterOutput = s.infer<typeof DrafterOutputSchema>;
+type DrafterStructuredOutput = z.infer<typeof DrafterOutputZodSchema>;
+
+const NO_SIGNIFICANT_BOARD_SUMMARY_FRAGMENT = 'No significant trends detected';
+
+export function hasMeaningfulBoardSummary(summary?: string): boolean {
+	if (!summary?.trim()) return false;
+	return !summary.includes(NO_SIGNIFICANT_BOARD_SUMMARY_FRAGMENT);
+}
+
+export function parseDrafterOutputFromText(text: string): DrafterStructuredOutput | null {
+	const candidates: string[] = [];
+
+	const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (codeBlockMatch?.[1]) {
+		candidates.push(codeBlockMatch[1].trim());
+	}
+
+	const rawJsonMatch = text.match(/\{[\s\S]*?"playerId"[\s\S]*?\}/);
+	if (rawJsonMatch?.[0]) {
+		candidates.push(rawJsonMatch[0]);
+	}
+
+	candidates.push(text.trim());
+
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		try {
+			const parsed = JSON.parse(candidate);
+			const validated = DrafterOutputZodSchema.safeParse(parsed);
+			if (validated.success) return validated.data;
+		} catch {
+			// try next candidate
+		}
+	}
+
+	return null;
+}
 
 // ---------------------------------------------------------------------------
 // buildUserPrompt - assembles all context the LLM needs
@@ -193,6 +241,12 @@ ${recentPicksDisplay}
 ${boardAnalysisSection}
 Use your tools to research the best pick for your team. Call getTopAvailable to see who's on the board, searchPlayers to find specific player profiles, analyzeBoardTrends to check for runs or value drops, and getTeamRoster to see what other teams have.
 
+Tool discipline rules:
+- Call getTopAvailable first before doing deep searches.
+- Avoid repeating the exact same searchPlayers query.
+- Call analyzeBoardTrends at most once unless major context changed.
+- You have a limited step budget, so keep tool calls concise.
+
 After researching, make your selection as JSON:
 {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
 }
@@ -289,9 +343,9 @@ export async function prepareDrafterContext(
 		boardAnalysis,
 	);
 
-	// 5. Augment system prompt with board analysis context if available
+	// 5. Augment system prompt only when analysis has meaningful signals
 	let systemPrompt = config.systemPrompt;
-	if (boardAnalysis) {
+	if (hasMeaningfulBoardSummary(boardAnalysis)) {
 		systemPrompt += `\n\nIMPORTANT - Board dynamics detected. Factor the board analysis into your decision. You may shift your strategy if the situation calls for it. If you do shift strategy, explain why in your reasoning.`;
 	}
 
@@ -334,7 +388,7 @@ export function createDrafterHandler(config: {
 			round,
 			pickNumber,
 			availableCount: availablePlayers.length,
-			hasBoardAnalysis: !!boardAnalysis,
+			hasBoardAnalysis: hasMeaningfulBoardSummary(boardAnalysis),
 		});
 
 		// Use prepareDrafterContext for initial checks (available slots, fallback cases)
@@ -378,89 +432,107 @@ export function createDrafterHandler(config: {
 			allPicks,
 			round,
 			pickNumber,
-			boardAnalysis,
+			hasMeaningfulBoardSummary(boardAnalysis) ? boardAnalysis : undefined,
 		);
 
-		// Call LLM with tools via generateText
-		ctx.logger.info('Calling LLM with tools for pick decision', { model: config.name });
-
-		let llmPick: {
-			playerId: string;
-			playerName: string;
-			position: Position;
-			reasoning: string;
-			confidence: number;
-		} | null = null;
-
-		try {
-			const result = await generateText({
-				model: config.model,
-				system: systemPrompt,
-				prompt: toolOrientedPrompt + '\n\nRespond with your pick as JSON: {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}',
-				tools,
-				stopWhen: stepCountIs(4),
+			// Call LLM with tools via generateText
+			const generationMode = getDrafterGenerationMode(config.name);
+			ctx.logger.info('Calling LLM with tools for pick decision', {
+				model: config.name,
+				generationMode,
 			});
 
-			const jsonMatch = result.text.match(/\{[\s\S]*"playerId"[\s\S]*\}/);
-			if (jsonMatch) {
-				try {
-					const parsed = JSON.parse(jsonMatch[0]);
-					llmPick = {
-						playerId: String(parsed.playerId),
-						playerName: parsed.playerName,
-						position: parsed.position,
-						reasoning: parsed.reasoning,
-						confidence: parsed.confidence,
-					};
-				} catch { /* parse failed */ }
+			let llmPick: DrafterStructuredOutput | null = null;
+			let fallbackReason: 'no_output' | 'invalid_json' | 'model_error' | null = null;
+
+			try {
+				if (generationMode === 'structured_with_tools') {
+					const result = await generateText({
+						model: config.model,
+						system: systemPrompt,
+						prompt: toolOrientedPrompt,
+						tools,
+						output: Output.object({
+							schema: DrafterOutputZodSchema,
+							name: 'draft_pick',
+							description: 'Final fantasy draft pick selection.',
+						}),
+						// Keep demo picks responsive while still allowing a short tool loop.
+						stopWhen: stepCountIs(4),
+					});
+					llmPick = result.output;
+				} else {
+					const result = await generateText({
+						model: config.model,
+						system: systemPrompt,
+						prompt: toolOrientedPrompt,
+						tools,
+						// Keep demo picks responsive while still allowing a short tool loop.
+						stopWhen: stepCountIs(4),
+					});
+					llmPick = parseDrafterOutputFromText(result.text);
+					if (!llmPick) {
+						fallbackReason = result.text.trim().length > 0 ? 'invalid_json' : 'no_output';
+					}
+				}
+			} catch (err) {
+				ctx.logger.error('LLM call failed', { error: String(err) });
+				fallbackReason = 'model_error';
 			}
-		} catch (err) {
-			ctx.logger.error('LLM call failed', { error: String(err) });
-		}
 
 		// Validate the LLM's pick
 		const availableSet = new Set(availablePlayers.map((p) => p.playerId));
 
 		if (llmPick) {
-			const isAvailable = availableSet.has(llmPick.playerId);
-			const player = availablePlayers.find((p) => p.playerId === llmPick!.playerId);
-			const fitsRoster = player ? canDraftPosition(roster, player.position) : false;
+			const idMatch = availablePlayers.find((p) => p.playerId === llmPick.playerId);
+			const nameMatch = idMatch
+				? null
+				: availablePlayers.find(
+					(p) => p.name.toLowerCase() === llmPick.playerName.toLowerCase(),
+				);
+			const selectedPlayer = idMatch ?? nameMatch ?? null;
+			const isAvailable = selectedPlayer ? availableSet.has(selectedPlayer.playerId) : false;
+			const fitsRoster = selectedPlayer ? canDraftPosition(roster, selectedPlayer.position) : false;
 
 			if (isAvailable && fitsRoster) {
 				ctx.logger.info('LLM pick validated', {
-					player: llmPick.playerName,
-					position: llmPick.position,
+					player: selectedPlayer!.name,
+					position: selectedPlayer!.position,
 					confidence: llmPick.confidence,
+					matchType: idMatch ? 'id' : 'name',
 				});
 
 				return {
-					playerId: llmPick.playerId,
-					playerName: llmPick.playerName,
-					position: llmPick.position,
+					playerId: selectedPlayer!.playerId,
+					playerName: selectedPlayer!.name,
+					position: selectedPlayer!.position,
 					reasoning: llmPick.reasoning,
 					confidence: Math.max(0, Math.min(1, llmPick.confidence)),
 				};
 			}
 
-			ctx.logger.warn('LLM picked unavailable or ineligible player, using fallback', {
-				llmPlayerId: llmPick.playerId,
-				llmPlayerName: llmPick.playerName,
-				isAvailable,
-				fitsRoster,
-			});
-		}
+				ctx.logger.warn('LLM picked unavailable or ineligible player, using fallback', {
+					llmPlayerId: llmPick.playerId,
+					llmPlayerName: llmPick.playerName,
+					isAvailable,
+					fitsRoster,
+					generationMode,
+				});
+			}
 
-		// Fallback: highest-ranked available player that fits
-		const fb = fallbackPick(availablePlayers, roster);
+			// Fallback: highest-ranked available player that fits
+			const fb = fallbackPick(availablePlayers, roster);
 		if (!fb) {
 			throw new Error('No available players fit any open roster slot');
 		}
 
-		ctx.logger.info('Using fallback pick', {
-			player: fb.name,
-			position: fb.position,
-			rank: fb.rank,
-		});
+			ctx.logger.info('Using fallback pick', {
+				player: fb.name,
+				position: fb.position,
+				rank: fb.rank,
+				generationMode,
+				fallbackReason: fallbackReason ?? 'invalid_output',
+			});
 
 		return {
 			playerId: fb.playerId,

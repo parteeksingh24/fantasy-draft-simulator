@@ -124,16 +124,19 @@ export const PERSONA_DISPLAY_NAMES: Record<string, string> = {
 export interface ToolCallEvent {
 	name: string;
 	args: Record<string, unknown>;
+	toolCallId?: string;
 }
 
 export interface ToolResultEvent {
 	name: string;
 	result: unknown;
+	toolCallId?: string;
 }
 
 export interface ToolCallRecord {
 	name: string;
 	args: Record<string, unknown>;
+	toolCallId?: string;
 	result?: unknown;
 	timestamp: number;
 }
@@ -154,7 +157,7 @@ export const PERSONA_MODELS: Record<string, string> = {
 	'drafter-qb-first': 'grok-3-fast',
 	'drafter-stud-rb': 'gpt-5-nano',
 	'drafter-value-hunter': 'claude-haiku-4-5',
-	'drafter-stack-builder': 'deepseek-chat',
+	'drafter-stack-builder': 'deepseek-reasoner',
 	'drafter-te-premium': 'kimi-k2.5',
 	'drafter-youth-movement': 'claude-haiku-4-5',
 	'drafter-contrarian': 'grok-4-1-fast-reasoning',

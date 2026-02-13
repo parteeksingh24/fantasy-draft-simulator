@@ -20,6 +20,7 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
 export interface SeedResponse {
 	seeded: boolean;
 	cached: boolean;
+	status?: 'cached' | 'seeded' | 'joined_inflight';
 	count: number;
 }
 

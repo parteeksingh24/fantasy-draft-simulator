@@ -44,9 +44,19 @@ export interface RecordPickResult {
 	roster: Roster;
 	availablePlayers: Player[];
 	draftComplete: boolean;
+	strategyShift?: {
+		pickNumber: number;
+		teamIndex: number;
+		persona: string;
+		trigger: string;
+		reasoning: string;
+		playerPicked: string;
+		position: string;
+	};
 }
 
 interface KVAdapter {
+	get: <T = unknown>(namespace: string, key: string) => Promise<{ exists: boolean; data: T }>;
 	set: (namespace: string, key: string, value: unknown, options?: { ttl: null }) => Promise<void>;
 }
 
@@ -69,7 +79,7 @@ export async function recordPick(
 	input: RecordPickInput,
 ): Promise<RecordPickResult> {
 	const { boardState, roster, availablePlayers, pickedPlayer, reasoning, confidence, personaName, boardAnalysis } = input;
-	const { currentPick, settings } = boardState;
+	const expectedPick = boardState.currentPick;
 
 	// Validate position fits a roster slot
 	if (!canDraftPosition(roster, pickedPlayer.position)) {
@@ -83,21 +93,106 @@ export async function recordPick(
 		};
 	}
 
+	// Optimistic concurrency check: verify board + availability against latest KV state.
+	const [latestBoardResult, latestPlayersResult] = await Promise.all([
+		kv.get<BoardState>(KV_DRAFT_STATE, KEY_BOARD_STATE),
+		kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS),
+	]);
+
+	if (!latestBoardResult.exists) {
+		return {
+			success: false,
+			message: 'No draft in progress. Board state was not found.',
+			boardState,
+			roster,
+			availablePlayers,
+			draftComplete: boardState.draftComplete,
+		};
+	}
+
+	const latestBoardState = latestBoardResult.data;
+	if (latestBoardState.draftComplete) {
+		return {
+			success: false,
+			message: 'Draft is already complete.',
+			boardState: latestBoardState,
+			roster,
+			availablePlayers: latestPlayersResult.exists ? latestPlayersResult.data : availablePlayers,
+			draftComplete: true,
+		};
+	}
+
+	const latestCurrentPick = latestBoardState.currentPick;
+	const pickMismatch = (
+		latestCurrentPick.pickNumber !== expectedPick.pickNumber
+		|| latestCurrentPick.teamIndex !== expectedPick.teamIndex
+	);
+	if (pickMismatch) {
+		return {
+			success: false,
+			message: `Pick conflict: expected pick #${expectedPick.pickNumber} (${TEAM_NAMES[expectedPick.teamIndex]}), but board is at pick #${latestCurrentPick.pickNumber} (${TEAM_NAMES[latestCurrentPick.teamIndex]}). Refresh and retry.`,
+			boardState: latestBoardState,
+			roster,
+			availablePlayers: latestPlayersResult.exists ? latestPlayersResult.data : availablePlayers,
+			draftComplete: latestBoardState.draftComplete,
+		};
+	}
+
+	if (!latestPlayersResult.exists) {
+		return {
+			success: false,
+			message: 'No available players found in draft state. Refresh and retry.',
+			boardState: latestBoardState,
+			roster,
+			availablePlayers,
+			draftComplete: latestBoardState.draftComplete,
+		};
+	}
+
+	const latestAvailablePlayers = latestPlayersResult.data;
+	const latestPickedPlayer = latestAvailablePlayers.find((p) => p.playerId === pickedPlayer.playerId);
+	if (!latestPickedPlayer) {
+		return {
+			success: false,
+			message: `Player ${pickedPlayer.name} (${pickedPlayer.playerId}) is no longer available. Refresh and retry.`,
+			boardState: latestBoardState,
+			roster,
+			availablePlayers: latestAvailablePlayers,
+			draftComplete: latestBoardState.draftComplete,
+		};
+	}
+
+	// Re-check with the latest player view in case stale input had outdated position data.
+	if (!canDraftPosition(roster, latestPickedPlayer.position)) {
+		return {
+			success: false,
+			message: `Cannot draft ${latestPickedPlayer.name} (${latestPickedPlayer.position}) - no available roster slot.`,
+			boardState: latestBoardState,
+			roster,
+			availablePlayers: latestAvailablePlayers,
+			draftComplete: latestBoardState.draftComplete,
+		};
+	}
+
+	const currentPick = latestCurrentPick;
+	const settings = latestBoardState.settings;
+
 	// Record the pick
 	const pick: Pick = {
 		pickNumber: currentPick.pickNumber,
 		round: currentPick.round,
 		teamIndex: currentPick.teamIndex,
-		playerId: pickedPlayer.playerId,
-		playerName: pickedPlayer.name,
-		position: pickedPlayer.position,
+		playerId: latestPickedPlayer.playerId,
+		playerName: latestPickedPlayer.name,
+		position: latestPickedPlayer.position,
 		reasoning,
 		confidence,
 	};
 
 	// Detect behavior-based strategy shifts
+	let detectedShift: RecordPickResult['strategyShift'] | undefined;
 	if (personaName && boardAnalysis) {
-		const shiftTrigger = detectPersonaShift(personaName, pick, boardAnalysis, availablePlayers);
+		const shiftTrigger = detectPersonaShift(personaName, pick, boardAnalysis, latestAvailablePlayers);
 
 		if (shiftTrigger) {
 			const strategyShift = {
@@ -106,49 +201,63 @@ export async function recordPick(
 				persona: personaName,
 				trigger: shiftTrigger,
 				reasoning,
-				playerPicked: pickedPlayer.name,
-				position: pickedPlayer.position,
+				playerPicked: latestPickedPlayer.name,
+				position: latestPickedPlayer.position,
 			};
 
+			detectedShift = strategyShift;
+
+			// Write individual key (for per-pick lookup)
 			await kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: null });
+
+			// Append to cumulative array (for GET /draft/strategies)
+			const existingShifts = await kv.get<typeof strategyShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
+			const allShifts = existingShifts.exists ? [...existingShifts.data, strategyShift] : [strategyShift];
+			await kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null });
 		}
 	}
 
 	// Update roster
-	const slot = assignRosterSlot(roster, pickedPlayer.position);
+	const updatedRoster: Roster = { ...roster };
+	const slot = assignRosterSlot(updatedRoster, latestPickedPlayer.position);
 	if (slot) {
 		const slotKey = slot === 'SUPERFLEX' ? 'superflex' : slot.toLowerCase() as 'qb' | 'rb' | 'wr' | 'te';
-		(roster as Record<string, unknown>)[slotKey] = pickedPlayer;
+		(updatedRoster as Record<string, unknown>)[slotKey] = latestPickedPlayer;
 	}
 
 	// Remove player from available list
-	const updatedAvailable = availablePlayers.filter((p) => p.playerId !== pickedPlayer.playerId);
+	const updatedAvailable = latestAvailablePlayers.filter((p) => p.playerId !== latestPickedPlayer.playerId);
 
 	// Update board state
-	boardState.picks.push(pick);
+	const updatedBoardState: BoardState = {
+		...latestBoardState,
+		picks: [...latestBoardState.picks, pick],
+		currentPick: latestCurrentPick,
+	};
 
 	const isLastPick = currentPick.pickNumber >= TOTAL_PICKS;
 	if (isLastPick) {
-		boardState.draftComplete = true;
-		boardState.currentPick = currentPick;
+		updatedBoardState.draftComplete = true;
+		updatedBoardState.currentPick = currentPick;
 	} else {
-		boardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
+		updatedBoardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
 	}
 
 	// Write all updated state to KV in parallel
 	await Promise.all([
-		kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null }),
+		kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, updatedRoster, { ttl: null }),
 		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
-		kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
+		kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoardState, { ttl: null }),
 	]);
 
 	return {
 		success: true,
-		message: `${TEAM_NAMES[currentPick.teamIndex]} selects ${pickedPlayer.name} (${pickedPlayer.position}) with pick #${currentPick.pickNumber}.`,
+		message: `${TEAM_NAMES[currentPick.teamIndex]} selects ${latestPickedPlayer.name} (${latestPickedPlayer.position}) with pick #${currentPick.pickNumber}.`,
 		pick,
-		boardState,
-		roster,
+		boardState: updatedBoardState,
+		roster: updatedRoster,
 		availablePlayers: updatedAvailable,
-		draftComplete: boardState.draftComplete,
+		draftComplete: updatedBoardState.draftComplete,
+		strategyShift: detectedShift,
 	};
 }

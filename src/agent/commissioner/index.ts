@@ -15,7 +15,7 @@ import drafterReactive from '../drafter-reactive';
 import { assignPersonas, KV_PERSONA_ASSIGNMENTS, type PersonaAssignment } from '../../lib/persona-assignment';
 import { analyzeBoardState } from '../../lib/board-analysis';
 import { recordPick } from '../../lib/record-pick';
-import { DRAFTER_MODEL_NAMES } from '../../lib/drafter-models';
+import { finalizeAndRecordPick, buildFallbackReasoning } from '../../lib/pick-engine';
 import {
 	type Player,
 	type Roster,
@@ -23,7 +23,6 @@ import {
 	type DraftSettings,
 	type Pick,
 	type CurrentPick,
-	type ReasoningSummary,
 	PickSchema,
 	BoardStateSchema,
 	getSnakeDraftPick,
@@ -33,6 +32,7 @@ import {
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
 	KV_PICK_REASONING,
+	KV_SCOUTING_NOTES,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
 	KEY_SETTINGS,
@@ -149,6 +149,18 @@ const agent = createAgent('commissioner', {
 			ctx.logger.info('Personas assigned', {
 				assignments: personaAssignments.map((a) => `Team ${a.teamIndex}: ${a.persona}`),
 			});
+
+			// Clean up stale data from previous drafts
+			try {
+				await Promise.all([
+					ctx.kv.deleteNamespace(KV_PICK_REASONING),
+					ctx.kv.deleteNamespace(KV_SCOUTING_NOTES),
+					ctx.kv.delete(KV_AGENT_STRATEGIES, 'strategy-shifts'),
+				]);
+				ctx.logger.info('Cleaned up stale data from previous drafts');
+			} catch (err) {
+				ctx.logger.warn('Failed to clean up stale data, continuing with draft start', { error: String(err) });
+			}
 
 			// Initialize all 12 team rosters, persona assignments, board state, and settings in parallel
 			await Promise.all([
@@ -306,7 +318,7 @@ const agent = createAgent('commissioner', {
 					playerId: fb.playerId,
 					playerName: fb.name,
 					position: fb.position,
-					reasoning: `Fallback pick after agent error: ${fb.name} is the highest-ranked available player (Rank ${fb.rank}).`,
+					reasoning: buildFallbackReasoning(fb, '(agent error)'),
 					confidence: 0.3,
 					toolsUsed: [],
 				};
@@ -369,20 +381,15 @@ const agent = createAgent('commissioner', {
 			}
 
 			// Write reasoning summary to KV so getDraftIntel tool has data
-			const reasoningSummary: ReasoningSummary = {
+			await finalizeAndRecordPick(ctx.kv, {
 				pickNumber: currentPick.pickNumber,
 				teamIndex: currentPick.teamIndex,
-				persona: personaName,
-				model: DRAFTER_MODEL_NAMES[personaName] ?? 'unknown',
-				playerId: pickedPlayer.playerId,
-				playerName: pickedPlayer.name,
-				position: pickedPlayer.position,
-				summary: drafterResult.reasoning.slice(0, 500),
+				personaName,
+				player: pickedPlayer,
+				reasoning: drafterResult.reasoning,
 				toolsUsed: drafterResult.toolsUsed,
 				confidence: drafterResult.confidence,
-				timestamp: Date.now(),
-			};
-			await ctx.kv.set(KV_PICK_REASONING, `pick-${currentPick.pickNumber}`, reasoningSummary, { ttl: null });
+			});
 
 			ctx.logger.info('AI pick recorded', {
 				pick: recordResult.pick.pickNumber,

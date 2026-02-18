@@ -1,32 +1,31 @@
 import { createRouter, sse } from '@agentuity/runtime';
 import { s } from '@agentuity/schema';
-import { Output, streamText, stepCountIs } from 'ai';
+import { Output, streamText, stepCountIs, NoObjectGeneratedError } from 'ai';
 import commissioner from '../agent/commissioner';
 import { seedPlayers } from '../lib/seed-players';
 import { DrafterOutputZodSchema, buildToolOrientedPrompt, fallbackPick, parseDrafterOutputFromText } from '../lib/drafter-common';
 import { getDrafterGenerationMode } from '../lib/drafter-capabilities';
 import { createDrafterTools } from '../lib/drafter-tools';
 import { DRAFTER_MODELS, DRAFTER_MODEL_NAMES, getDrafterPrompt } from '../lib/drafter-models';
+import { MAX_STEPS } from '../lib/drafter-runtime-config';
 import { recordPick } from '../lib/record-pick';
 import { analyzeBoardState } from '../lib/board-analysis';
+import { validateStructuredPick, buildFallbackReasoning, finalizeAndRecordPick } from '../lib/pick-engine';
 import type { PersonaAssignment } from '../lib/persona-assignment';
 import {
 	type BoardState,
 	type Player,
 	type Roster,
-	type ReasoningSummary,
 	type StrategyShift,
 	type TeamShiftSummary,
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
-	KV_PICK_REASONING,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
 	NUM_TEAMS,
 	TEAM_NAMES,
 	getAvailableSlots,
-	canDraftPosition,
 } from '../lib/types';
 
 /**
@@ -226,7 +225,18 @@ api.post('/draft/pick', async (c) => {
 		playerId,
 	});
 
-	return c.json(result);
+	// Fetch all rosters so frontend has immediate state
+	let rosters: Roster[] = [];
+	try {
+		const rosterResults = await Promise.all(
+			Array.from({ length: NUM_TEAMS }, (_, i) =>
+				c.var.kv.get<Roster>(KV_TEAM_ROSTERS, `team-${i}`),
+			),
+		);
+		rosters = rosterResults.filter((r) => r.exists).map((r) => r.data);
+	} catch { /* non-critical */ }
+
+	return c.json({ ...result, rosters });
 });
 
 // POST /draft/advance - Trigger next AI pick (non-streaming fallback)
@@ -427,43 +437,45 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 
 		let fullText = '';
 		let streamError: string | null = null;
-			let structuredPick: {
-				playerId: string;
-				playerName: string;
-				position: 'QB' | 'RB' | 'WR' | 'TE';
-				reasoning: string;
-				confidence: number;
-			} | null = null;
-			let fallbackReason: 'model_error' | 'no_output' | 'invalid_json' | 'invalid_output' | null = null;
+		let structuredPick: {
+			playerId: string;
+			playerName: string;
+			position: 'QB' | 'RB' | 'WR' | 'TE';
+			reasoning: string;
+			confidence: number;
+		} | null = null;
+		let fallbackReason: 'model_error' | 'no_output' | 'invalid_json' | 'invalid_output' | null = null;
+		let initialAttemptText = '';
 
-			try {
-				const result = generationMode === 'structured_with_tools'
-					? streamText({
-						model,
-						system: systemPrompt,
-						prompt: toolOrientedPrompt,
-						tools,
-						output: Output.object({
-							schema: DrafterOutputZodSchema,
-							name: 'draft_pick',
-							description: 'Final fantasy draft pick selection.',
-						}),
-						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(5),
-					})
-					: streamText({
-						model,
-						system: systemPrompt,
-						prompt: toolOrientedPrompt,
-						tools,
-						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(5),
-					});
+		try {
+			const result = generationMode === 'structured_with_tools'
+				? streamText({
+					model,
+					system: systemPrompt,
+					prompt: toolOrientedPrompt,
+					tools,
+					output: Output.object({
+						schema: DrafterOutputZodSchema,
+						name: 'draft_pick',
+						description: 'Final fantasy draft pick selection.',
+					}),
+					// Keep demo picks responsive while still allowing a short tool loop.
+					stopWhen: stepCountIs(MAX_STEPS),
+				})
+				: streamText({
+					model,
+					system: systemPrompt,
+					prompt: toolOrientedPrompt,
+					tools,
+					// Keep demo picks responsive while still allowing a short tool loop.
+					stopWhen: stepCountIs(MAX_STEPS),
+				});
 
-				for await (const part of result.fullStream) {
+			for await (const part of result.fullStream) {
 				switch (part.type) {
 					case 'text-delta':
 						fullText += part.text;
+						initialAttemptText += part.text;
 						await stream.writeSSE({ event: 'thinking', data: part.text });
 						durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
 						break;
@@ -492,27 +504,124 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 						});
 						durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
 						break;
-					}
 				}
+			}
 
-				const output = await result.output;
-				if (typeof output === 'string') {
-					if (fullText.length === 0) {
-						fullText = output;
-					}
-					structuredPick = parseDrafterOutputFromText(fullText);
-					if (!structuredPick) {
-						fallbackReason = fullText.trim().length > 0 ? 'invalid_json' : 'no_output';
-					}
-				} else {
-					structuredPick = output;
+			const output = await result.output;
+			if (typeof output === 'string') {
+				const parseText = initialAttemptText.length > 0 ? initialAttemptText : output;
+				structuredPick = parseDrafterOutputFromText(parseText);
+				if (!structuredPick) {
+					fallbackReason = parseText.trim().length > 0 ? 'invalid_json' : 'no_output';
 				}
-			} catch (err) {
+			} else {
+				structuredPick = output;
+			}
+		} catch (err) {
+			if (generationMode === 'structured_with_tools' && NoObjectGeneratedError.isInstance(err)) {
+				logger.warn('Structured output failed', {
+					finishReason: err.finishReason,
+					cause: err.cause ? String(err.cause) : undefined,
+					text: err.text?.slice(0, 200),
+				});
+				structuredPick = parseDrafterOutputFromText(initialAttemptText || err.text || '');
+				if (!structuredPick) {
+					// Retry 1: structured with provider tuning
+					try {
+						let retryStructuredText = '';
+						const retryStructured = streamText({
+							model,
+							system: systemPrompt,
+							prompt: toolOrientedPrompt,
+							tools,
+							output: Output.object({
+								schema: DrafterOutputZodSchema,
+								name: 'draft_pick',
+								description: 'Final fantasy draft pick selection.',
+							}),
+							stopWhen: stepCountIs(MAX_STEPS),
+							providerOptions: {
+								anthropic: { structuredOutputMode: 'outputFormat' },
+							},
+						});
+						for await (const part of retryStructured.fullStream) {
+							switch (part.type) {
+								case 'text-delta':
+									fullText += part.text;
+									retryStructuredText += part.text;
+									await stream.writeSSE({ event: 'thinking', data: part.text });
+									durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
+									break;
+								case 'tool-call':
+									if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
+									await stream.writeSSE({ event: 'tool-call', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, args: part.input }) });
+									durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
+									break;
+								case 'tool-result':
+									await stream.writeSSE({ event: 'tool-result', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, result: summarizeToolResult(part.toolName, part.output) }) });
+									durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
+									break;
+							}
+						}
+						const retryOutput = await retryStructured.output;
+						if (typeof retryOutput === 'string') {
+							const parseText = retryStructuredText.length > 0 ? retryStructuredText : retryOutput;
+							structuredPick = parseDrafterOutputFromText(parseText);
+						} else {
+							structuredPick = retryOutput;
+						}
+					} catch (retryStructuredErr) {
+						logger.warn('Structured retry with provider tuning also failed, falling back to text mode', { error: String(retryStructuredErr) });
+					}
+
+					// Retry 2: text mode (only if structured retry didn't produce a pick)
+					if (!structuredPick) {
+						try {
+							let retryText = '';
+							const retryResult = streamText({
+								model,
+								system: systemPrompt,
+								prompt: toolOrientedPrompt,
+								tools,
+								stopWhen: stepCountIs(MAX_STEPS),
+							});
+							for await (const part of retryResult.fullStream) {
+								switch (part.type) {
+									case 'text-delta':
+										fullText += part.text;
+										retryText += part.text;
+										await stream.writeSSE({ event: 'thinking', data: part.text });
+										durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
+										break;
+									case 'tool-call':
+										if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
+										await stream.writeSSE({ event: 'tool-call', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, args: part.input }) });
+										durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
+										break;
+									case 'tool-result':
+										await stream.writeSSE({ event: 'tool-result', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, result: summarizeToolResult(part.toolName, part.output) }) });
+										durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
+										break;
+								}
+							}
+							structuredPick = parseDrafterOutputFromText(retryText);
+							if (!structuredPick) {
+								fallbackReason = retryText.trim().length > 0 ? 'invalid_json' : 'no_output';
+							}
+						} catch (retryErr) {
+							streamError = String(retryErr);
+							fallbackReason = 'model_error';
+							logger.warn('Text mode retry also failed', { persona: personaName, error: streamError });
+						}
+					}
+				}
+			} else {
 				streamError = String(err);
 				fallbackReason = 'model_error';
 				logger.warn('Streaming failed for model', { persona: personaName, model: modelName, error: streamError });
 				await stream.writeSSE({ event: 'thinking', data: `\n\n[Model error: ${streamError}]` });
 			}
+		}
 
 		// Validate structured output against current board constraints
 		let pickedPlayer: Player | null = null;
@@ -521,38 +630,32 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		let parseStage = 'none';
 
 		if (structuredPick) {
-			const idMatch = availablePlayers.find((p) => p.playerId === structuredPick.playerId);
-			const nameMatch = idMatch
-				? null
-				: availablePlayers.find((p) => p.name.toLowerCase() === structuredPick.playerName.toLowerCase());
-			const selectedPlayer = idMatch ?? nameMatch ?? null;
-			const fitsRoster = selectedPlayer ? canDraftPosition(roster, selectedPlayer.position) : false;
+			const validated = validateStructuredPick(structuredPick, availablePlayers, roster);
 
-				if (selectedPlayer && fitsRoster) {
-					pickedPlayer = selectedPlayer;
-					parseStage = idMatch ? 'structured-output-id' : 'structured-output-name';
+			if (validated) {
+				pickedPlayer = validated.player;
+				parseStage = `structured-output-${validated.matchType}`;
 				logger.info('LLM structured output validated', {
 					parseStage,
-					player: selectedPlayer.name,
-					playerId: selectedPlayer.playerId,
+					player: validated.player.name,
+					playerId: validated.player.playerId,
 				});
-				} else {
-					fallbackReason = 'invalid_output';
-					logger.warn('LLM structured output did not map to an eligible available player', {
-						playerId: structuredPick.playerId,
-						playerName: structuredPick.playerName,
-						matchedByName: !!nameMatch,
-						generationMode,
-					});
-				}
 			} else {
-				logger.warn('No structured pick output from model, entering fallback', {
-					streamError,
-					fullTextLength: fullText.length,
+				fallbackReason = 'invalid_output';
+				logger.warn('LLM structured output did not map to an eligible available player', {
+					playerId: structuredPick.playerId,
+					playerName: structuredPick.playerName,
 					generationMode,
-					fallbackReason,
 				});
 			}
+		} else {
+			logger.warn('No structured pick output from model, entering fallback', {
+				streamError,
+				fullTextLength: fullText.length,
+				generationMode,
+				fallbackReason,
+			});
+		}
 
 		// 7. Deterministic fallback (best available by rank)
 		if (!pickedPlayer) {
@@ -563,20 +666,20 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 				stream.close();
 				return;
 			}
-			const errorContext = streamError ? ` (model error: ${streamError})` : '';
-				pickReasoning = `Fallback: ${pickedPlayer.name} is the highest-ranked available (Rank ${pickedPlayer.rank}).${errorContext}`;
-				pickConfidence = 0.3;
-				parseStage = 'fallback';
-				logger.warn('Using fallback pick', {
-					persona: personaName,
-					model: modelName,
-					player: pickedPlayer.name,
-					streamError,
-					parseStage,
-					generationMode,
-					fallbackReason: fallbackReason ?? 'invalid_output',
-				});
-			}
+			const errorContext = streamError ? `(model error: ${streamError})` : undefined;
+			pickReasoning = buildFallbackReasoning(pickedPlayer, errorContext);
+			pickConfidence = 0.3;
+			parseStage = 'fallback';
+			logger.warn('Using fallback pick', {
+				persona: personaName,
+				model: modelName,
+				player: pickedPlayer.name,
+				streamError,
+				parseStage,
+				generationMode,
+				fallbackReason: fallbackReason ?? 'invalid_output',
+			});
+		}
 
 		// 8. Record the pick
 		const result = await recordPick(c.var.kv, {
@@ -599,26 +702,19 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 
 		// 9. Write reasoning summary to KV (critical path for getDraftIntel tool)
 		// and close the durable stream (best-effort for replay)
-		const reasoningSummary: ReasoningSummary = {
-			pickNumber: currentPick.pickNumber,
-			teamIndex: currentPick.teamIndex,
-			persona: personaName,
-			model: modelName,
-			playerId: pickedPlayer.playerId,
-			playerName: pickedPlayer.name,
-			position: pickedPlayer.position,
-			summary: pickReasoning.slice(0, 500),
-			toolsUsed,
-			confidence: pickConfidence,
-			timestamp: Date.now(),
-			...(durableStream ? { streamId: durableStream.id, streamUrl: durableStream.url } : {}),
-		};
-
-		// Best-effort: KV reasoning summary + durable stream close.
 		// The pick is already committed via recordPick above, so failures
 		// here should not surface as errors to the client.
 		try {
-			await c.var.kv.set(KV_PICK_REASONING, `pick-${currentPick.pickNumber}`, reasoningSummary, { ttl: null });
+			await finalizeAndRecordPick(c.var.kv, {
+				pickNumber: currentPick.pickNumber,
+				teamIndex: currentPick.teamIndex,
+				personaName,
+				player: pickedPlayer,
+				reasoning: pickReasoning,
+				toolsUsed,
+				confidence: pickConfidence,
+				...(durableStream ? { streamId: durableStream.id, streamUrl: durableStream.url } : {}),
+			});
 		} catch (err) {
 			logger.warn('Failed to write reasoning summary to KV', { error: String(err), pickNumber: currentPick.pickNumber });
 		}
@@ -694,11 +790,17 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 
 // GET /draft/players - Get available players list (for frontend pick interface)
 api.get('/draft/players', async (c) => {
-	const playersResult = await c.var.kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS);
+	const [playersResult, seededAtResult] = await Promise.all([
+		c.var.kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS),
+		c.var.kv.get<number>(KV_DRAFT_STATE, 'seeded-at'),
+	]);
 	if (!playersResult.exists) {
 		return c.json({ error: 'No players seeded. POST /draft/seed first.' }, 404);
 	}
-	return c.json({ players: playersResult.data });
+	return c.json({
+		players: playersResult.data,
+		seededAt: seededAtResult.exists ? seededAtResult.data : null,
+	});
 });
 
 // GET /draft/strategies - Get persona assignments and strategy shifts
@@ -720,6 +822,29 @@ api.get('/draft/strategies', async (c) => {
 		c.var.logger.warn('KV read failed in /draft/strategies', { error: String(err) });
 		return c.json({ personas: null, shifts: [], teamShiftSummary: [] });
 	}
+});
+
+// POST /draft/end - End the current draft early (marks draftComplete without deleting state)
+api.post('/draft/end', async (c) => {
+	const boardResult = await c.var.kv.get<BoardState>(KV_DRAFT_STATE, KEY_BOARD_STATE);
+
+	if (!boardResult.exists) {
+		return c.json({ success: true, message: 'No active draft' });
+	}
+
+	const boardState = boardResult.data;
+
+	if (boardState.draftComplete) {
+		return c.json({ success: true, message: 'Draft already ended', boardState });
+	}
+
+	// Mark the draft as complete without deleting any KV keys
+	const updatedBoard: BoardState = { ...boardState, draftComplete: true };
+	await c.var.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoard, { ttl: null });
+
+	c.var.logger.info('Draft ended early', { picksMade: boardState.picks.length });
+
+	return c.json({ success: true, message: 'Draft ended', boardState: updatedBoard });
 });
 
 // POST /draft/test/trigger-shift - Inject a fake strategy shift for UI testing

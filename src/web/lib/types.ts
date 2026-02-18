@@ -56,6 +56,14 @@ export interface Roster {
 	superflex?: Player;
 }
 
+/** Check if a position can fill one of the team's available roster slots. */
+export function canDraftPosition(roster: Roster, position: Position): boolean {
+	const slotKey = position.toLowerCase() as 'qb' | 'rb' | 'wr' | 'te';
+	if (!roster[slotKey]) return true;
+	if (!roster.superflex) return true;
+	return false;
+}
+
 export interface PersonaAssignment {
 	teamIndex: number;
 	persona: string;

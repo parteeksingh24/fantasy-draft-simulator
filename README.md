@@ -147,11 +147,11 @@ Each draft randomly assigns personas from a weighted pool. Duplicates are allowe
 | risk-averse | grok-4-1-fast-reasoning | xAI | Takes the highest-ranked safe player, never reaches |
 | reactive | gpt-5-mini | OpenAI | Follows board momentum, panics into position runs, jumps on value drops |
 
-Most personas use `structured_with_tools` generation (structured output + tool calling). xAI models use `text_json_with_tools` because the gateway does not support tools + JSON schema together for those models.
+Only `drafter-balanced` uses `structured_with_tools` generation (structured output + tool calling). All other personas use `text_json_with_tools`: xAI models because the gateway does not support tools + JSON schema together for those models, `drafter-stack-builder` because deepseek-reasoner does not support JSON schema output natively, `drafter-zero-rb`/`drafter-value-hunter`/`drafter-youth-movement` because claude-haiku-4-5 frequently throws AI_NoObjectGeneratedError with structured output and tools, gpt-5-mini personas (`drafter-bold`, `drafter-te-premium`, `drafter-reactive`) because gpt-5-mini struggles with structured output and tools in the gateway, and `drafter-stud-rb` for consistency with text-first persona handling.
 
 ## Agent Tools
 
-Agents choose which tools to call autonomously. Each agent has a step budget of 5 via `stopWhen: stepCountIs(5)`. The tool surface is intentionally small: 4 reads, 1 write.
+Agents choose which tools to call autonomously. Each agent is told it has a budget of 4 tool calls via the system prompt (`TOOL_BUDGET`). The runtime caps total generation steps at 7 (`MAX_STEPS = TOOL_BUDGET + 3`) via `stopWhen: stepCountIs(MAX_STEPS)`. The tool surface is intentionally small: 4 reads, 1 write.
 
 | Tool | Description | Inputs |
 |------|-------------|--------|
@@ -329,8 +329,9 @@ Open `http://localhost:3500`, pick your draft position, and start the draft.
 | POST | `/draft/pick` | Human makes a pick. Body: `{ "playerId": "..." }` |
 | POST | `/draft/advance` | Trigger the next AI pick (non-streaming). |
 | GET | `/draft/advance/stream` | SSE stream for AI pick with live thinking, tool calls, and events. |
-| GET | `/draft/players` | Get available players list for the human pick interface. |
+| GET | `/draft/players` | Get available players and seed timestamp. Returns `{ players: Player[], seededAt: number \| null }`. |
 | GET | `/draft/strategies` | Get persona assignments and strategy shifts. |
+| POST | `/draft/test/trigger-shift` | Inject a fake strategy shift for UI testing. Body: `{ "teamIndex": 0 }` |
 
 ## Storage
 
@@ -338,8 +339,9 @@ Open `http://localhost:3500`, pick your draft position, and start the draft.
 
 | Namespace | Key | Purpose |
 |-----------|-----|---------|
-| `draft-state` | `board-state` | Current pick, all picks, draft settings |
+| `draft-state` | `board` | Current pick, all picks, draft settings |
 | `draft-state` | `available-players` | Players still on the board (source of truth) |
+| `draft-state` | `seeded-at` | Unix timestamp (ms) of last successful player seeding |
 | `team-rosters` | `team-{0..11}` | Per-team roster (QB, RB, WR, TE, SUPERFLEX slots) |
 | `agent-strategies` | `persona-assignments` | Which persona is assigned to each team |
 | `agent-strategies` | `strategy-shifts` | Detected strategy shift events |

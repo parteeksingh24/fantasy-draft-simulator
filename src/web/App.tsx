@@ -4,7 +4,7 @@ import './App.css';
 import { cn } from './lib/utils';
 import { api } from './lib/api';
 import type { BoardState, Player, Roster, PersonaAssignment, StrategyShift, TeamShiftSummary } from './lib/types';
-import { TEAM_NAMES, NUM_TEAMS, PERSONA_DISPLAY_NAMES, SHIFT_CATEGORY_LABELS } from './lib/types';
+import { TEAM_NAMES, NUM_TEAMS, NUM_ROUNDS, PERSONA_DISPLAY_NAMES, SHIFT_CATEGORY_LABELS, canDraftPosition } from './lib/types';
 import { DraftBoard } from './components/DraftBoard';
 import { DraftControls } from './components/DraftControls';
 import { PlayerPicker } from './components/PlayerPicker';
@@ -24,6 +24,7 @@ export function App() {
 	const [board, setBoard] = useState<BoardState | null>(null);
 	const [rosters, setRosters] = useState<Roster[]>([]);
 	const [players, setPlayers] = useState<Player[]>([]);
+	const [seededAt, setSeededAt] = useState<number | null>(null);
 	const [personas, setPersonas] = useState<PersonaAssignment[] | null>(null);
 	const [shifts, setShifts] = useState<StrategyShift[]>([]);
 	const [teamShiftSummary, setTeamShiftSummary] = useState<TeamShiftSummary[]>([]);
@@ -33,6 +34,7 @@ export function App() {
 	const [starting, setStarting] = useState(false);
 	const [advancing, setAdvancing] = useState(false);
 	const [picking, setPicking] = useState(false);
+	const [ending, setEnding] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [playersLoading, setPlayersLoading] = useState(false);
 
@@ -45,26 +47,17 @@ export function App() {
 	// Latest strategy shift summary (inline card, no global top banner)
 	const [shiftBanner, setShiftBanner] = useState<StrategyShift | null>(null);
 
-	// Panel visibility with exit delay
-	const [showThinkingPanel, setShowThinkingPanel] = useState(false);
-
+	// Auto-dismiss strategy shift banner after 5 seconds
 	useEffect(() => {
-		if (stream.isStreaming) {
-			setShowThinkingPanel(true);
-		} else if (showThinkingPanel) {
-			// Keep panel open between consecutive AI picks to avoid collapse/expand flash.
-			// Only start the hide timer when the next turn is the human's or the draft is over.
-			const nextIsAI = board && !board.draftComplete && !board.currentPick.isHuman;
-			if (nextIsAI) return;
-
-			const timer = setTimeout(() => setShowThinkingPanel(false), 1500);
-			return () => clearTimeout(timer);
-		}
-	}, [stream.isStreaming, showThinkingPanel, board]);
+		if (!shiftBanner) return;
+		const timer = setTimeout(() => setShiftBanner(null), 5000);
+		return () => clearTimeout(timer);
+	}, [shiftBanner]);
 
 	// Refs to prevent duplicate concurrent calls
 	const advancingRef = useRef(false);
 	const startingRef = useRef(false);
+	const endingRef = useRef(false);
 	const preseedStartedRef = useRef(false);
 	const boardRef = useRef<BoardState | null>(null);
 
@@ -72,24 +65,13 @@ export function App() {
 		boardRef.current = board;
 	}, [board]);
 
-	// Fetch board state from the server
-	const refreshBoard = useCallback(async () => {
-		try {
-			const data = await api.getBoard();
-			setBoard(data.board);
-			setRosters(data.rosters);
-			setError(null);
-		} catch {
-			// Board might not exist yet, that's fine
-		}
-	}, []);
-
 	// Fetch available players
 	const refreshPlayers = useCallback(async () => {
 		try {
 			setPlayersLoading(true);
 			const data = await api.getPlayers();
 			setPlayers(data.players);
+			setSeededAt(data.seededAt ?? null);
 		} catch {
 			// Players might not be seeded yet
 		} finally {
@@ -159,6 +141,7 @@ export function App() {
 				if (ignore) return;
 				if (playersResult.status === 'fulfilled') {
 					setPlayers(playersResult.value.players);
+					setSeededAt(playersResult.value.seededAt ?? null);
 				}
 				if (strategiesResult.status === 'fulfilled') {
 					if (strategiesResult.value.personas) setPersonas(strategiesResult.value.personas);
@@ -181,11 +164,38 @@ export function App() {
 		return () => { ignore = true; };
 	}, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+	// End the current draft early
+	async function handleEndDraft() {
+		// Stop SSE stream and reset advancing guards immediately
+		stream.close();
+		endingRef.current = true;
+		advancingRef.current = false;
+		setAdvancing(false);
+		setEnding(true);
+
+		try {
+			const result = await api.endDraft();
+			if (result.boardState) {
+				setBoard(result.boardState);
+			} else {
+				// Server confirmed but didn't return board - set local draftComplete
+				setBoard((prev) => prev ? { ...prev, draftComplete: true } : prev);
+			}
+		} catch {
+			// Server unavailable - still end the draft locally
+			setBoard((prev) => prev ? { ...prev, draftComplete: true } : prev);
+		} finally {
+			setEnding(false);
+			endingRef.current = false;
+		}
+	}
+
 	// Reset all state for a new draft
 	function handleNewDraft() {
 		setBoard(null);
 		setRosters([]);
 		setPlayers([]);
+		setSeededAt(null);
 		setPersonas(null);
 		setShifts([]);
 		setTeamShiftSummary([]);
@@ -193,8 +203,10 @@ export function App() {
 		setHumanTeamIndex(null);
 		setAdvancing(false);
 		setPicking(false);
+		setEnding(false);
 		setError(null);
 		advancingRef.current = false;
+		endingRef.current = false;
 		stream.reset();
 	}
 
@@ -216,6 +228,7 @@ export function App() {
 			setRosters(result.rosters);
 			setPersonas(result.personas);
 			setTeamShiftSummary([]);
+			refreshPlayers().catch(() => {});
 		} catch (e) {
 			setError(e instanceof Error ? e.message : 'Failed to start draft');
 		} finally {
@@ -229,6 +242,7 @@ export function App() {
 	const { startStream } = stream;
 	const handleAdvance = useCallback(async () => {
 		if (advancingRef.current) return;
+		if (endingRef.current) return;
 		advancingRef.current = true;
 		setAdvancing(true);
 		setError(null);
@@ -288,33 +302,35 @@ export function App() {
 				setError(result.message || 'Pick was not accepted');
 				return;
 			}
-			// Update board directly from the pick response (more reliable than refreshBoard)
+			// Update board and rosters directly from the pick response (more reliable than refreshBoard)
 			if (result.boardState) setBoard(result.boardState);
-			// Also refresh players and board in background for full state sync
+			if (result.rosters) setRosters(result.rosters);
+			// Also refresh players in background for full state sync
 			refreshPlayers().catch(() => {});
-			refreshBoard().catch(() => {});
 		} catch (e) {
 			setError(e instanceof Error ? e.message : 'Failed to make pick');
 		} finally {
 			setPicking(false);
 		}
-	}, [refreshBoard, refreshPlayers]);
+	}, [refreshPlayers]);
 
 	// Auto-advance: when it's an AI turn and we're not already advancing
 	useEffect(() => {
 		if (!board || board.draftComplete) return;
 		if (board.currentPick.isHuman) return;
 		if (stream.isStreaming) return;
+		if (stream.error) return;
 
 		const timer = setTimeout(() => {
 			if (advancingRef.current) return;
+			if (endingRef.current) return;
 			const latestBoard = boardRef.current;
 			if (!latestBoard || latestBoard.draftComplete || latestBoard.currentPick.isHuman) return;
 			handleAdvance();
 		}, 1500);
 
 		return () => clearTimeout(timer);
-	}, [board, handleAdvance, stream.isStreaming]);
+	}, [board, handleAdvance, stream.isStreaming, stream.error]);
 
 	// Get the human team's roster
 	const resolvedTeamIndex = humanTeamIndex ?? 0;
@@ -324,18 +340,41 @@ export function App() {
 	const draftComplete = board?.draftComplete ?? false;
 	const isHumanTurn = board?.currentPick.isHuman ?? false;
 
-	// Pick timer
-	const isOnClock = draftStarted && !draftComplete;
+	// Picks until the human's next turn (shown in ThinkingPanel "your turn" state)
+	const picksUntilNextTurn = (() => {
+		if (!board || board.draftComplete || !isHumanTurn) return 0;
+		const currentPickNum = board.currentPick.pickNumber;
+		const totalPicks = NUM_TEAMS * NUM_ROUNDS;
+		for (let p = currentPickNum + 1; p <= totalPicks; p++) {
+			const round = Math.ceil(p / NUM_TEAMS);
+			const posInRound = (p - 1) % NUM_TEAMS;
+			const isEvenRound = round % 2 === 0;
+			const teamIdx = isEvenRound ? (NUM_TEAMS - 1 - posInRound) : posInRound;
+			if (teamIdx === resolvedTeamIndex) return p - currentPickNum;
+		}
+		return 0;
+	})();
+
+	// Pick timer (paused when stream has an error to prevent timeout-triggered advances)
+	const isOnClock = draftStarted && !draftComplete && !stream.error && !ending;
 
 	const handleTimeout = useCallback(() => {
-		if (isHumanTurn) {
-			if (players.length > 0) {
-				handlePick(players[0]!.playerId);
+		try {
+			if (isHumanTurn) {
+				// Auto-pick first eligible player (respects roster constraints)
+				const eligible = humanRoster
+					? players.find((p) => canDraftPosition(humanRoster, p.position))
+					: players[0];
+				if (eligible) {
+					handlePick(eligible.playerId);
+				}
+			} else {
+				handleAdvance();
 			}
-		} else {
-			handleAdvance();
+		} catch {
+			setError('Auto-pick failed. Please make your selection manually.');
 		}
-	}, [isHumanTurn, players, handlePick, handleAdvance]);
+	}, [isHumanTurn, players, humanRoster, handlePick, handleAdvance]);
 
 	const timer = usePickTimer(isOnClock, handleTimeout);
 
@@ -361,7 +400,7 @@ export function App() {
 						)}
 						{draftComplete && (
 							<Badge className="bg-green-500/15 border-green-500/30 text-green-400 hover:bg-green-500/20">
-								Draft Complete
+								{board!.picks.length >= NUM_TEAMS * NUM_ROUNDS ? 'Draft Complete' : 'Draft Ended'}
 							</Badge>
 						)}
 					</div>
@@ -370,10 +409,12 @@ export function App() {
 							onStart={handleStart}
 							onAdvance={handleAdvance}
 							onNewDraft={handleNewDraft}
+							onEndDraft={handleEndDraft}
 							humanTeamIndex={humanTeamIndex}
 							setHumanTeamIndex={setHumanTeamIndex}
 							starting={starting}
 							advancing={advancing}
+							ending={ending}
 							personas={personas}
 							timerDisplay={timer.display}
 							timerPercent={timer.percent}
@@ -524,38 +565,34 @@ export function App() {
 						</div>
 						) : (
 							<div className="flex flex-col gap-4">
+								<AnimatePresence>
 								{shiftBanner && (
-									<Card className="bg-yellow-500/10 border-yellow-500/25 py-3">
-										<CardContent className="px-4">
-												<div className="flex items-start justify-between gap-3">
-													<div className="flex items-center gap-2">
-														<Badge className="bg-yellow-500/20 border-yellow-500/30 text-yellow-300 text-[10px] h-auto py-0.5 px-1.5">
-															!
-														</Badge>
-														<div className="min-w-0">
-															<p className="text-xs text-yellow-300 font-medium">
-																Strategy Shift • Pick #{shiftBanner.pickNumber}
-															</p>
-															<p className="text-xs text-yellow-400/90 truncate">
-																{PERSONA_DISPLAY_NAMES[shiftBanner.persona] ?? shiftBanner.persona} ({TEAM_NAMES[shiftBanner.teamIndex]}) changed approach
-															</p>
-														</div>
-													</div>
-													<span className="text-xs text-yellow-200/80 max-w-[48rem] truncate">
-														{shiftBanner.trigger}
-													</span>
-												</div>
-												<div className="mt-2 flex items-center gap-2">
-												<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
-													{SHIFT_CATEGORY_LABELS[shiftBanner.category]}
-												</Badge>
-												<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300">
-													{shiftBanner.severity}
-												</Badge>
-											</div>
-										</CardContent>
-									</Card>
+									<motion.div
+										initial={{ opacity: 0, height: 0 }}
+										animate={{ opacity: 1, height: 'auto' }}
+										exit={{ opacity: 0, height: 0 }}
+										transition={{ duration: 0.2 }}
+										className="overflow-hidden"
+									>
+										<div className="flex items-center gap-2 py-1.5 px-3 bg-yellow-500/10 border border-yellow-500/25 rounded-lg text-xs">
+											<Badge className="bg-yellow-500/20 border-yellow-500/30 text-yellow-300 text-[10px] h-auto py-0.5 px-1.5 flex-shrink-0">!</Badge>
+											<span className="text-yellow-300 font-medium flex-shrink-0">Strategy Shift</span>
+											<span className="text-yellow-400/70 flex-shrink-0">&middot;</span>
+											<span className="text-yellow-400/90 truncate">
+												{PERSONA_DISPLAY_NAMES[shiftBanner.persona] ?? shiftBanner.persona} ({TEAM_NAMES[shiftBanner.teamIndex]}) changed approach
+											</span>
+											<span className="text-yellow-400/70 flex-shrink-0">&mdash;</span>
+											<span className="text-yellow-200/80 truncate flex-1 min-w-0">{shiftBanner.trigger}</span>
+											<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300 flex-shrink-0">
+												{SHIFT_CATEGORY_LABELS[shiftBanner.category]}
+											</Badge>
+											<Badge className="text-[10px] h-auto py-0.5 px-1.5 bg-yellow-500/20 border-yellow-500/30 text-yellow-300 flex-shrink-0">
+												{shiftBanner.severity}
+											</Badge>
+										</div>
+									</motion.div>
 								)}
+							</AnimatePresence>
 
 								{/* Top section: Draft Board (full width, prominent) */}
 								<DraftBoard
@@ -583,34 +620,28 @@ export function App() {
 														isHumanTurn={isHumanTurn}
 														onPick={handlePick}
 														picking={picking}
+														seededAt={seededAt}
 													/>
 												)}
 											</div>
 
-									{/* Right: Thinking panel (slides in/out) */}
-									<AnimatePresence>
-										{showThinkingPanel && (
-											<motion.div
-												initial={{ width: 0, opacity: 0, x: 40 }}
-												animate={{ width: 320, opacity: 1, x: 0 }}
-												exit={{ width: 0, opacity: 0, x: 40 }}
-												transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-												className="flex-shrink-0 overflow-hidden"
-											>
-												<ThinkingPanel
-													personas={personas}
-													isStreaming={stream.isStreaming}
-													streamTokens={stream.tokens}
-													streamPersona={stream.persona}
-													streamModel={stream.model}
-													streamTeamIndex={stream.teamIndex}
-													toolCalls={stream.toolCalls}
-													boardContext={stream.boardContext}
-													streamError={stream.error}
-												/>
-											</motion.div>
-										)}
-									</AnimatePresence>
+									{/* Right: Thinking panel (always visible during draft) */}
+									<div className="flex-shrink-0 overflow-hidden" style={{ width: 320 }}>
+										<ThinkingPanel
+											personas={personas}
+											isStreaming={stream.isStreaming}
+											streamTokens={stream.tokens}
+											streamPersona={stream.persona}
+											streamModel={stream.model}
+											streamTeamIndex={stream.teamIndex}
+											toolCalls={stream.toolCalls}
+											boardContext={stream.boardContext}
+											streamError={stream.error}
+											isHumanTurn={isHumanTurn}
+											roster={humanRoster}
+											picksUntilNextTurn={picksUntilNextTurn}
+										/>
+									</div>
 								</div>
 							)}
 
@@ -624,7 +655,7 @@ export function App() {
 									<Card className="bg-gray-900/60 border-green-500/20">
 										<CardHeader>
 											<CardTitle className="text-sm text-green-400">
-												Draft Complete
+												{board.picks.length >= NUM_TEAMS * NUM_ROUNDS ? 'Draft Complete' : 'Draft Ended'}
 											</CardTitle>
 										</CardHeader>
 										<CardContent>

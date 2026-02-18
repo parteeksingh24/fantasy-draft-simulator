@@ -7,6 +7,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { xai } from '@ai-sdk/xai';
 import { deepseek } from '@ai-sdk/deepseek';
+import { TOOL_BUDGET } from './drafter-runtime-config';
 
 
 export const DRAFTER_MODELS: Record<string, LanguageModel> = {
@@ -53,7 +54,7 @@ Tool discipline:
 - Call analyzeBoardTrends at most once.
 - Call getDraftIntel early to review your prior notes, recent shifts, and what other teams did.
 - Write a scouting note only when you observe something worth remembering.
-- You have a budget of 5 tool calls. Spend them wisely.
+- You have a budget of ${TOOL_BUDGET} tool calls. Spend them wisely.
 
 Respond with valid JSON: {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
 

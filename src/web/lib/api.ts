@@ -42,6 +42,7 @@ export interface BoardResponse {
 
 export interface PlayersResponse {
 	players: Player[];
+	seededAt: number | null;
 }
 
 export interface AdvanceResponse {
@@ -75,6 +76,7 @@ export interface PickResponse {
 		confidence: number;
 	};
 	boardState: BoardState;
+	rosters?: Roster[];
 	draftComplete: boolean;
 }
 
@@ -82,6 +84,12 @@ export interface StrategiesResponse {
 	personas: PersonaAssignment[] | null;
 	shifts: StrategyShift[];
 	teamShiftSummary: TeamShiftSummary[];
+}
+
+export interface EndDraftResponse {
+	success: boolean;
+	message: string;
+	boardState?: BoardState;
 }
 
 export const api = {
@@ -111,4 +119,7 @@ export const api = {
 
 	getStrategies: () =>
 		fetchJSON<StrategiesResponse>('/draft/strategies'),
+
+	endDraft: () =>
+		fetchJSON<EndDraftResponse>('/draft/end', { method: 'POST' }),
 };

@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import { cn } from '../lib/utils';
 import type { Player, Position, Roster } from '../lib/types';
-import { POSITION_COLORS } from '../lib/types';
+import { POSITION_COLORS, canDraftPosition } from '../lib/types';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Card } from './ui/card';
@@ -12,6 +13,7 @@ interface PlayerPickerProps {
 	isHumanTurn: boolean;
 	onPick: (playerId: string) => void;
 	picking: boolean;
+	seededAt?: number | null;
 }
 
 const FILTER_OPTIONS: Array<{ label: string; value: Position | 'ALL' }> = [
@@ -22,7 +24,7 @@ const FILTER_OPTIONS: Array<{ label: string; value: Position | 'ALL' }> = [
 	{ label: 'TE', value: 'TE' },
 ];
 
-export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: PlayerPickerProps) {
+export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking, seededAt }: PlayerPickerProps) {
 	const [positionFilter, setPositionFilter] = useState<Position | 'ALL'>('ALL');
 	const [searchQuery, setSearchQuery] = useState('');
 
@@ -44,6 +46,29 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 
 		return list;
 	}, [players, positionFilter, searchQuery]);
+
+	// Check roster eligibility for each position
+	const positionEligible = useMemo(() => {
+		if (!roster) return { QB: true, RB: true, WR: true, TE: true };
+		return {
+			QB: canDraftPosition(roster, 'QB'),
+			RB: canDraftPosition(roster, 'RB'),
+			WR: canDraftPosition(roster, 'WR'),
+			TE: canDraftPosition(roster, 'TE'),
+		} as Record<Position, boolean>;
+	}, [roster]);
+
+	// Count eligible players per position filter
+	const eligibleCounts = useMemo(() => {
+		const counts: Record<Position | 'ALL', number> = { ALL: 0, QB: 0, RB: 0, WR: 0, TE: 0 };
+		for (const p of players) {
+			if (positionEligible[p.position]) {
+				counts[p.position]++;
+				counts.ALL++;
+			}
+		}
+		return counts;
+	}, [players, positionEligible]);
 
 	// Roster slots display
 	const rosterSlots = [
@@ -93,12 +118,14 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 							{FILTER_OPTIONS.map((opt) => {
 								const isActive = positionFilter === opt.value;
 								const posColors = opt.value !== 'ALL' ? POSITION_COLORS[opt.value] : null;
+								const eligible = opt.value === 'ALL' ? eligibleCounts.ALL > 0 : positionEligible[opt.value];
 								return (
 									<Badge
 										key={opt.value}
 										onClick={() => setPositionFilter(opt.value)}
 										className={cn(
 											'cursor-pointer text-xs transition-colors',
+											!eligible && 'opacity-40',
 											isActive
 												? posColors
 													? cn(posColors.bg, posColors.text, 'border', posColors.border)
@@ -107,6 +134,9 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 										)}
 									>
 										{opt.label}
+										{opt.value !== 'ALL' && (
+											<span className="ml-1 text-[10px] opacity-60">{eligibleCounts[opt.value]}</span>
+										)}
 									</Badge>
 								);
 							})}
@@ -139,6 +169,7 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 								const prevTier = idx > 0 ? filteredPlayers[idx - 1]!.tier : player.tier;
 								const showSeparator = idx > 0 && player.tier !== prevTier;
 								const colors = POSITION_COLORS[player.position];
+								const eligible = positionEligible[player.position];
 								return (
 									<div key={player.playerId}>
 										{showSeparator && (
@@ -150,10 +181,11 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 										)}
 										<div
 											className={cn(
-												'w-full px-4 py-2 flex items-center gap-3 border-b border-gray-800/50 hover:bg-gray-800/40',
-												isHumanTurn && !picking && 'cursor-pointer active:bg-gray-700/40',
+												'w-full px-4 py-2 flex items-center gap-3 border-b border-gray-800/50',
+												eligible ? 'hover:bg-gray-800/40' : 'opacity-40',
+												isHumanTurn && !picking && eligible && 'cursor-pointer active:bg-gray-700/40',
 											)}
-											onClick={() => handleRowClick(player.playerId)}
+											onClick={() => eligible && handleRowClick(player.playerId)}
 										>
 											{/* Position badge */}
 											<Badge className={cn('text-xs font-mono w-8 justify-center px-1 py-0', colors.bg, colors.text, 'border', colors.border)}>
@@ -172,29 +204,56 @@ export function PlayerPicker({ players, roster, isHumanTurn, onPick, picking }: 
 												#{player.rank}
 											</span>
 											{/* Draft button */}
-											<Button
-												size="sm"
-												variant="outline"
-												onClick={(e) => {
-													e.stopPropagation();
-													onPick(player.playerId);
-												}}
-												disabled={picking || !isHumanTurn}
-												className={cn(
-													'text-xs h-8 px-3',
-													isHumanTurn
-														? 'text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20'
-														: 'text-gray-600 border-gray-700/30 cursor-not-allowed',
-												)}
-											>
-												Draft
-											</Button>
+											{eligible ? (
+												<Button
+													size="sm"
+													variant="outline"
+													onClick={(e) => {
+														e.stopPropagation();
+														onPick(player.playerId);
+													}}
+													disabled={picking || !isHumanTurn}
+													className={cn(
+														'text-xs h-8 px-3',
+														isHumanTurn
+															? 'text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20'
+															: 'text-gray-600 border-gray-700/30 cursor-not-allowed',
+													)}
+												>
+													Draft
+												</Button>
+											) : (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<Button
+															size="sm"
+															variant="outline"
+															disabled
+															className="text-xs h-8 px-3 text-gray-600 border-gray-700/30 cursor-not-allowed"
+														>
+															Draft
+														</Button>
+													</TooltipTrigger>
+													<TooltipContent side="left">
+														<p className="text-xs">No roster slot for {player.position}</p>
+													</TooltipContent>
+												</Tooltip>
+											)}
 										</div>
 									</div>
 								);
 							})
 						)}
 					</div>
+
+					{/* Data source disclaimer */}
+					{seededAt && (
+						<div className="px-4 py-1.5 border-t border-gray-800/50 flex-shrink-0">
+							<p className="text-[10px] text-gray-600">
+								Data: Sleeper API &middot; Seeded {new Date(seededAt).toLocaleString()}
+							</p>
+						</div>
+					)}
 				</div>
 
 				{/* Roster sidebar */}

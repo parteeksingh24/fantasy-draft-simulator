@@ -43,6 +43,12 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: never;
 			};
+	'POST /api/draft/end': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/draft/pick': {
 				inputSchema: never;
 				outputSchema: never;
@@ -136,6 +142,12 @@ declare module '@agentuity/frontend' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			end: {
+				/**
+				 * Route: POST /api/draft/end
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			pick: {
 				/**
 				 * Route: POST /api/draft/pick
@@ -195,6 +207,12 @@ declare module '@agentuity/react' {
 				params: never;
 			};
 	'GET /api/draft/board': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/end': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
@@ -274,6 +292,12 @@ declare module '@agentuity/react' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			end: {
+				/**
+				 * Route: POST /api/draft/end
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			pick: {
 				/**
 				 * Route: POST /api/draft/pick
@@ -345,6 +369,12 @@ const _rpcRouteMetadata = {
 						"get": {
 								"type": "api",
 								"path": "/api/draft/board"
+						}
+				},
+				"end": {
+						"post": {
+								"type": "api",
+								"path": "/api/draft/end"
 						}
 				},
 				"pick": {

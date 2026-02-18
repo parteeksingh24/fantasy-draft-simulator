@@ -4,6 +4,7 @@ import {
 	KV_DRAFT_STATE,
 	KEY_AVAILABLE_PLAYERS,
 } from './types';
+import { SLEEPER_BLOCKLIST } from './sleeper-blocklist';
 
 // Sleeper API types
 interface SleeperPlayer {
@@ -43,6 +44,16 @@ const TOP_N_PLAYERS = 150;
 const SLEEPER_FETCH_TIMEOUT_MS = 8000;
 const SLEEPER_FETCH_RETRIES = 2;
 const SLEEPER_RETRY_BASE_DELAY_MS = 400;
+
+// Statuses that indicate a player is not fantasy-draftable.
+// Sleeper's `active: true` + `status === 'Active'` lets some stale entries through;
+// this denylist catches additional non-draftable states.
+const STATUS_DENYLIST = new Set([
+	'inactive',
+	'retired',
+	'voluntarily retired',
+	'reserve/retired',
+]);
 
 function getLikelyNflSeasonYear(date = new Date()): number {
 	// Jan/Feb generally still map to the previous NFL season context.
@@ -93,8 +104,11 @@ async function fetchSleeperPlayers(): Promise<SleeperPlayer[]> {
 					// Must be active
 					if (!p.active) return false;
 
-					// Check status if available
-					if (p.status && p.status !== 'Active') return false;
+					// Check status against denylist (catches more phantom entries)
+					if (p.status && STATUS_DENYLIST.has(p.status.trim().toLowerCase())) return false;
+
+					// Exclude known phantom players
+					if (SLEEPER_BLOCKLIST.has(p.player_id)) return false;
 
 					// Must have a search rank (for sorting)
 					if (!p.search_rank || p.search_rank === 999999) return false;
@@ -175,8 +189,11 @@ export async function seedPlayers(kv: KeyValueStorage): Promise<Player[]> {
 	// Map to our Player type
 	const players = sleeperPlayers.map((sp) => mapSleeperToPlayer(sp));
 
-	// Store available player list in KV (primary source of truth, fast)
-	await kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null });
+	// Store available player list and seed timestamp in KV
+	await Promise.all([
+		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null }),
+		kv.set(KV_DRAFT_STATE, 'seeded-at', Date.now(), { ttl: null }),
+	]);
 
 	return players;
 }

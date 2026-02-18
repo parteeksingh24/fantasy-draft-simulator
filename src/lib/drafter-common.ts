@@ -4,7 +4,7 @@
  * then call createAgent() directly at the file level (required for build tool detection).
  */
 import { s } from '@agentuity/schema';
-import { Output, generateText, stepCountIs } from 'ai';
+import { Output, generateText, stepCountIs, NoObjectGeneratedError } from 'ai';
 import type { LanguageModel } from 'ai';
 import type { KeyValueStorage } from '@agentuity/core';
 import { z } from 'zod';
@@ -24,6 +24,8 @@ import {
 } from './types';
 import { createDrafterTools } from './drafter-tools';
 import { getDrafterGenerationMode } from './drafter-capabilities';
+import { validateStructuredPick, buildFallbackReasoning } from './pick-engine';
+import { TOOL_BUDGET, MAX_STEPS } from './drafter-runtime-config';
 
 // ---------------------------------------------------------------------------
 // Schemas (shared by all drafter agents)
@@ -250,7 +252,7 @@ Tool discipline:
 - Call analyzeBoardTrends at most once.
 - Call getDraftIntel early to review your prior notes, recent shifts, and what other teams did.
 - Write a scouting note only when you observe something worth remembering.
-- You have a budget of 5 tool calls. Spend them wisely.
+- You have a budget of ${TOOL_BUDGET} tool calls. Spend them wisely.
 
 After researching, make your selection as JSON:
 {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`;
@@ -465,7 +467,7 @@ export function createDrafterHandler(config: {
 							description: 'Final fantasy draft pick selection.',
 						}),
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(5),
+						stopWhen: stepCountIs(MAX_STEPS),
 					});
 					llmPick = result.output;
 					toolsUsed = [...new Set(result.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
@@ -476,7 +478,7 @@ export function createDrafterHandler(config: {
 						prompt: toolOrientedPrompt,
 						tools,
 						// Keep demo picks responsive while still allowing a short tool loop.
-						stopWhen: stepCountIs(5),
+						stopWhen: stepCountIs(MAX_STEPS),
 					});
 					llmPick = parseDrafterOutputFromText(result.text);
 					toolsUsed = [...new Set(result.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
@@ -485,70 +487,115 @@ export function createDrafterHandler(config: {
 					}
 				}
 			} catch (err) {
-				ctx.logger.error('LLM call failed', { error: String(err) });
-				fallbackReason = 'model_error';
+				if (generationMode === 'structured_with_tools' && NoObjectGeneratedError.isInstance(err)) {
+					ctx.logger.warn('Structured output failed', {
+						finishReason: err.finishReason,
+						cause: err.cause ? String(err.cause) : undefined,
+						text: err.text?.slice(0, 200),
+					});
+
+					// Try to parse a pick from the error's text first
+					llmPick = parseDrafterOutputFromText(err.text ?? '');
+
+					if (!llmPick) {
+						// Retry 1: structured with provider tuning
+						try {
+							const retryResult = await generateText({
+								model: config.model,
+								system: systemPrompt,
+								prompt: toolOrientedPrompt,
+								tools,
+								output: Output.object({
+									schema: DrafterOutputZodSchema,
+									name: 'draft_pick',
+									description: 'Final fantasy draft pick selection.',
+								}),
+								stopWhen: stepCountIs(MAX_STEPS),
+								providerOptions: {
+									anthropic: { structuredOutputMode: 'outputFormat' },
+								},
+							});
+							llmPick = retryResult.output;
+							toolsUsed = [...new Set(retryResult.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
+						} catch (retryStructuredErr) {
+							ctx.logger.warn('Structured retry with provider tuning also failed, falling back to text mode', {
+								error: String(retryStructuredErr),
+							});
+
+							// Retry 2: text mode (final fallback)
+							try {
+								const textResult = await generateText({
+									model: config.model,
+									system: systemPrompt,
+									prompt: toolOrientedPrompt,
+									tools,
+									stopWhen: stepCountIs(MAX_STEPS),
+								});
+								llmPick = parseDrafterOutputFromText(textResult.text);
+								toolsUsed = [...new Set(textResult.steps.flatMap(step => step.toolCalls.map(tc => tc.toolName)))];
+								if (!llmPick) {
+									fallbackReason = textResult.text.trim().length > 0 ? 'invalid_json' : 'no_output';
+								}
+							} catch (textErr) {
+								ctx.logger.error('Text mode fallback also failed', { error: String(textErr) });
+								fallbackReason = 'model_error';
+							}
+						}
+					}
+				} else {
+					ctx.logger.error('LLM call failed', { error: String(err) });
+					fallbackReason = 'model_error';
+				}
 			}
 
-		// Validate the LLM's pick
-		const availableSet = new Set(availablePlayers.map((p) => p.playerId));
-
+		// Validate the LLM's pick using shared validation
 		if (llmPick) {
-			const idMatch = availablePlayers.find((p) => p.playerId === llmPick.playerId);
-			const nameMatch = idMatch
-				? null
-				: availablePlayers.find(
-					(p) => p.name.toLowerCase() === llmPick.playerName.toLowerCase(),
-				);
-			const selectedPlayer = idMatch ?? nameMatch ?? null;
-			const isAvailable = selectedPlayer ? availableSet.has(selectedPlayer.playerId) : false;
-			const fitsRoster = selectedPlayer ? canDraftPosition(roster, selectedPlayer.position) : false;
+			const validated = validateStructuredPick(llmPick, availablePlayers, roster);
 
-			if (isAvailable && fitsRoster) {
+			if (validated) {
 				ctx.logger.info('LLM pick validated', {
-					player: selectedPlayer!.name,
-					position: selectedPlayer!.position,
+					player: validated.player.name,
+					position: validated.player.position,
 					confidence: llmPick.confidence,
-					matchType: idMatch ? 'id' : 'name',
+					matchType: validated.matchType,
 				});
 
 				return {
-					playerId: selectedPlayer!.playerId,
-					playerName: selectedPlayer!.name,
-					position: selectedPlayer!.position,
+					playerId: validated.player.playerId,
+					playerName: validated.player.name,
+					position: validated.player.position,
 					reasoning: llmPick.reasoning,
 					confidence: Math.max(0, Math.min(1, llmPick.confidence)),
 					toolsUsed,
 				};
 			}
 
-				ctx.logger.warn('LLM picked unavailable or ineligible player, using fallback', {
-					llmPlayerId: llmPick.playerId,
-					llmPlayerName: llmPick.playerName,
-					isAvailable,
-					fitsRoster,
-					generationMode,
-				});
-			}
+			ctx.logger.warn('LLM picked unavailable or ineligible player, using fallback', {
+				llmPlayerId: llmPick.playerId,
+				llmPlayerName: llmPick.playerName,
+				generationMode,
+			});
+		}
 
-			// Fallback: highest-ranked available player that fits
-			const fb = fallbackPick(availablePlayers, roster);
+		// Fallback: highest-ranked available player that fits
+		const fb = fallbackPick(availablePlayers, roster);
 		if (!fb) {
 			throw new Error('No available players fit any open roster slot');
 		}
 
-			ctx.logger.info('Using fallback pick', {
-				player: fb.name,
-				position: fb.position,
-				rank: fb.rank,
-				generationMode,
-				fallbackReason: fallbackReason ?? 'invalid_output',
-			});
+		ctx.logger.info('Using fallback pick', {
+			player: fb.name,
+			position: fb.position,
+			rank: fb.rank,
+			generationMode,
+			fallbackReason: fallbackReason ?? 'invalid_output',
+		});
 
 		return {
 			playerId: fb.playerId,
 			playerName: fb.name,
 			position: fb.position,
-			reasoning: `Fallback pick: ${fb.name} is the highest-ranked available player (Rank ${fb.rank}) that fits an open roster slot.`,
+			reasoning: buildFallbackReasoning(fb),
 			confidence: 0.5,
 			toolsUsed,
 		};

@@ -1,6 +1,6 @@
 import { cn } from '../lib/utils';
 import type { BoardState, PersonaAssignment } from '../lib/types';
-import { TEAM_NAMES, PERSONA_DISPLAY_NAMES, NUM_TEAMS } from '../lib/types';
+import { TEAM_NAMES, PERSONA_DISPLAY_NAMES, NUM_TEAMS, NUM_ROUNDS } from '../lib/types';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -10,10 +10,12 @@ interface DraftControlsProps {
 	onStart: () => void;
 	onAdvance: () => void;
 	onNewDraft: () => void;
+	onEndDraft: () => void;
 	humanTeamIndex: number | null;
 	setHumanTeamIndex: (value: number | null) => void;
 	starting: boolean;
 	advancing: boolean;
+	ending: boolean;
 	personas: PersonaAssignment[] | null;
 	timerDisplay: string;
 	timerPercent: number;
@@ -24,10 +26,12 @@ export function DraftControls({
 	onStart,
 	onAdvance,
 	onNewDraft,
+	onEndDraft,
 	humanTeamIndex,
 	setHumanTeamIndex,
 	starting,
 	advancing,
+	ending,
 	personas,
 	timerDisplay,
 	timerPercent,
@@ -40,7 +44,7 @@ export function DraftControls({
 	// Status text
 	let statusText = 'Not Started';
 	if (draftComplete) {
-		statusText = 'Draft Complete';
+		statusText = (board?.picks.length ?? 0) >= NUM_TEAMS * NUM_ROUNDS ? 'Draft Complete' : 'Draft Ended';
 	} else if (currentPick) {
 		statusText = `Round ${currentPick.round}, Pick ${currentPick.pickNumber}`;
 	}
@@ -60,7 +64,7 @@ export function DraftControls({
 		}
 	}
 
-	const canAdvance = draftStarted && !draftComplete && !isHumanTurn && !advancing;
+	const canAdvance = draftStarted && !draftComplete && !isHumanTurn && !advancing && !ending;
 
 	function handlePositionChange(val: string) {
 		if (val === 'random') {
@@ -191,6 +195,19 @@ export function DraftControls({
 							size="sm"
 						>
 							{advancing ? 'Picking...' : 'Advance'}
+						</Button>
+					)}
+
+					{/* End Draft button - during active draft */}
+					{draftStarted && !draftComplete && (
+						<Button
+							onClick={onEndDraft}
+							disabled={ending}
+							variant="outline"
+							size="sm"
+							className="text-red-400 border-red-500/30 hover:text-red-300 hover:border-red-500/50 hover:bg-red-500/10"
+						>
+							{ending ? 'Ending...' : 'End Draft'}
 						</Button>
 					)}
 

@@ -21,8 +21,11 @@ import {
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
+	KV_PICK_REASONING,
+	KV_SCOUTING_NOTES,
 	KEY_BOARD_STATE,
 	KEY_AVAILABLE_PLAYERS,
+	KEY_SETTINGS,
 	NUM_TEAMS,
 	TEAM_NAMES,
 	getAvailableSlots,
@@ -845,6 +848,26 @@ api.post('/draft/end', async (c) => {
 	c.var.logger.info('Draft ended early', { picksMade: boardState.picks.length });
 
 	return c.json({ success: true, message: 'Draft ended', boardState: updatedBoard });
+});
+
+// POST /draft/reset - Reset draft state (preserves player seed data)
+api.post('/draft/reset', async (c) => {
+	c.var.logger.info('Resetting draft state');
+
+	await Promise.all([
+		// Delete board + settings but preserve player seed data (KEY_AVAILABLE_PLAYERS, seeded-at)
+		c.var.kv.delete(KV_DRAFT_STATE, KEY_BOARD_STATE),
+		c.var.kv.delete(KV_DRAFT_STATE, KEY_SETTINGS),
+		// Delete entire namespaces for draft-specific data
+		// .catch() guards against local dev where deleteNamespace is not implemented
+		c.var.kv.deleteNamespace(KV_TEAM_ROSTERS).catch(() => {}),
+		c.var.kv.deleteNamespace(KV_AGENT_STRATEGIES).catch(() => {}),
+		c.var.kv.deleteNamespace(KV_PICK_REASONING).catch(() => {}),
+		c.var.kv.deleteNamespace(KV_SCOUTING_NOTES).catch(() => {}),
+	]);
+
+	c.var.logger.info('Draft state reset complete');
+	return c.json({ success: true });
 });
 
 // POST /draft/test/trigger-shift - Inject a fake strategy shift for UI testing

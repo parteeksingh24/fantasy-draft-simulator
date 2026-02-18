@@ -95,73 +95,33 @@ export function App() {
 		}
 	}, []);
 
-	// Hydrate from server on mount (resume in-progress draft)
+	// Pre-seed player data on mount so it's ready when the user clicks Start.
+	// No KV hydration: every page load starts fresh at the setup screen.
 	useEffect(() => {
-		let ignore = false;
+		if (!preseedStartedRef.current) {
+			preseedStartedRef.current = true;
 
-		async function hydrate() {
-			// Pre-seed player data in the background so it's ready when the user clicks Start.
-			// This fetches from Sleeper API + writes to KV. The endpoint is idempotent (skips if cached).
-			if (!preseedStartedRef.current) {
-				preseedStartedRef.current = true;
-
-				let shouldPreseed = true;
-				try {
-					shouldPreseed = window.sessionStorage.getItem(PRESEED_SESSION_KEY) !== '1';
-					if (shouldPreseed) {
-						window.sessionStorage.setItem(PRESEED_SESSION_KEY, '1');
-					}
-				} catch {
-					// Ignore sessionStorage access failures and fall back to ref-only guard.
-				}
-
+			let shouldPreseed = true;
+			try {
+				shouldPreseed = window.sessionStorage.getItem(PRESEED_SESSION_KEY) !== '1';
 				if (shouldPreseed) {
-					api.seedPlayers().catch(() => {
-						try {
-							window.sessionStorage.removeItem(PRESEED_SESSION_KEY);
-						} catch {
-							// Ignore storage cleanup errors.
-						}
-					});
+					window.sessionStorage.setItem(PRESEED_SESSION_KEY, '1');
 				}
+			} catch {
+				// Ignore sessionStorage access failures and fall back to ref-only guard.
 			}
 
-			try {
-				const data = await api.getBoard();
-				if (ignore) return;
-				setBoard(data.board);
-				setRosters(data.rosters);
-				setHumanTeamIndex(data.board.settings.humanTeamIndex);
-				// Call APIs directly (not through wrapper functions that swallow errors)
-				// so Promise.allSettled can detect failures
-				const [playersResult, strategiesResult] = await Promise.allSettled([
-					api.getPlayers(),
-					api.getStrategies(),
-				]);
-				if (ignore) return;
-				if (playersResult.status === 'fulfilled') {
-					setPlayers(playersResult.value.players);
-					setSeededAt(playersResult.value.seededAt ?? null);
-				}
-				if (strategiesResult.status === 'fulfilled') {
-					if (strategiesResult.value.personas) setPersonas(strategiesResult.value.personas);
-					if (Array.isArray(strategiesResult.value.shifts)) setShifts(strategiesResult.value.shifts);
-					setTeamShiftSummary(
-						Array.isArray(strategiesResult.value.teamShiftSummary) ? strategiesResult.value.teamShiftSummary : [],
-					);
-				}
-				if (playersResult.status === 'rejected' || strategiesResult.status === 'rejected') {
-					setError('Draft resumed, but some data failed to load. Try refreshing.');
-				}
-			} catch (err) {
-				if (ignore) return;
-				console.warn('No draft in progress:', err);
-			} finally {
-				if (!ignore) setHydrating(false);
+			if (shouldPreseed) {
+				api.seedPlayers().catch(() => {
+					try {
+						window.sessionStorage.removeItem(PRESEED_SESSION_KEY);
+					} catch {
+						// Ignore storage cleanup errors.
+					}
+				});
 			}
 		}
-		hydrate();
-		return () => { ignore = true; };
+		setHydrating(false);
 	}, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// End the current draft early
@@ -181,9 +141,11 @@ export function App() {
 				// Server confirmed but didn't return board - set local draftComplete
 				setBoard((prev) => prev ? { ...prev, draftComplete: true } : prev);
 			}
+			await api.resetDraft().catch(() => {});
 		} catch {
 			// Server unavailable - still end the draft locally
 			setBoard((prev) => prev ? { ...prev, draftComplete: true } : prev);
+			await api.resetDraft().catch(() => {});
 		} finally {
 			setEnding(false);
 			endingRef.current = false;
@@ -191,7 +153,16 @@ export function App() {
 	}
 
 	// Reset all state for a new draft
-	function handleNewDraft() {
+	async function handleNewDraft() {
+		// Clear backend KV state before resetting frontend
+		try {
+			await api.resetDraft();
+		} catch (e) {
+			setError(e instanceof Error ? e.message : 'Failed to reset draft. Please try again.');
+			return;
+		}
+		sessionStorage.removeItem(PRESEED_SESSION_KEY);
+		preseedStartedRef.current = false;
 		setBoard(null);
 		setRosters([]);
 		setPlayers([]);
@@ -204,6 +175,7 @@ export function App() {
 		setAdvancing(false);
 		setPicking(false);
 		setEnding(false);
+		setPlayersLoading(false);
 		setError(null);
 		advancingRef.current = false;
 		endingRef.current = false;
@@ -378,49 +350,44 @@ export function App() {
 
 	const timer = usePickTimer(isOnClock, handleTimeout);
 
-	return (
-		<TooltipProvider>
-			<div className="text-white font-sans min-h-screen flex flex-col">
-				{/* Header + Controls bar - only show when draft is active */}
-				{draftStarted && (
-				<div className="px-6 py-3 max-w-[1600px] mx-auto w-full">
-					<div className="flex items-center justify-between mb-3">
-						<div>
-							<h1 className="text-xl font-thin tracking-wide">
-								Fantasy Draft Simulator
-							</h1>
-							<p className="text-xs text-gray-600 mt-0.5">
-								AI-powered 8-team snake draft
-							</p>
+		return (
+			<TooltipProvider>
+				<div className="text-white font-sans min-h-screen flex flex-col">
+					{/* Header + Controls bar - only show when draft is active */}
+					{draftStarted && (
+						<div className="px-6 py-3 max-w-[1600px] mx-auto w-full">
+							<div className="flex items-center justify-between mb-3">
+								<div>
+									<h1 className="text-xl font-thin tracking-wide">
+										Fantasy Draft Simulator
+									</h1>
+									<p className="text-xs text-gray-600 mt-0.5">
+										AI-powered 8-team snake draft
+									</p>
+								</div>
+								{!draftComplete && isHumanTurn && (
+									<Badge className="bg-cyan-500/15 border-cyan-500/30 text-cyan-400 animate-pulse hover:bg-cyan-500/20">
+										Your turn to pick!
+									</Badge>
+								)}
+							</div>
+							<DraftControls
+								board={board}
+								onStart={handleStart}
+								onAdvance={handleAdvance}
+								onNewDraft={handleNewDraft}
+								onEndDraft={handleEndDraft}
+								humanTeamIndex={humanTeamIndex}
+								setHumanTeamIndex={setHumanTeamIndex}
+								starting={starting}
+								advancing={advancing}
+								ending={ending}
+								personas={personas}
+								timerDisplay={timer.display}
+								timerPercent={timer.percent}
+							/>
 						</div>
-						{!draftComplete && isHumanTurn && (
-							<Badge className="bg-cyan-500/15 border-cyan-500/30 text-cyan-400 animate-pulse hover:bg-cyan-500/20">
-								Your turn to pick!
-							</Badge>
-						)}
-						{draftComplete && (
-							<Badge className="bg-green-500/15 border-green-500/30 text-green-400 hover:bg-green-500/20">
-								{board!.picks.length >= NUM_TEAMS * NUM_ROUNDS ? 'Draft Complete' : 'Draft Ended'}
-							</Badge>
-						)}
-					</div>
-					<DraftControls
-							board={board}
-							onStart={handleStart}
-							onAdvance={handleAdvance}
-							onNewDraft={handleNewDraft}
-							onEndDraft={handleEndDraft}
-							humanTeamIndex={humanTeamIndex}
-							setHumanTeamIndex={setHumanTeamIndex}
-							starting={starting}
-							advancing={advancing}
-							ending={ending}
-							personas={personas}
-							timerDisplay={timer.display}
-							timerPercent={timer.percent}
-						/>
-				</div>
-				)}
+					)}
 
 				{/* Error banner */}
 				<AnimatePresence>

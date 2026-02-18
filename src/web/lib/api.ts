@@ -92,6 +92,10 @@ export interface EndDraftResponse {
 	boardState?: BoardState;
 }
 
+export interface ResetDraftResponse {
+	success: boolean;
+}
+
 export const api = {
 	seedPlayers: () =>
 		fetchJSON<SeedResponse>('/draft/seed', { method: 'POST' }),
@@ -122,4 +126,7 @@ export const api = {
 
 	endDraft: () =>
 		fetchJSON<EndDraftResponse>('/draft/end', { method: 'POST' }),
+
+	resetDraft: () =>
+		fetchJSON<ResetDraftResponse>('/draft/reset', { method: 'POST' }),
 };

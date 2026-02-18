@@ -61,6 +61,12 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: never;
 			};
+	'POST /api/draft/reset': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
 	'POST /api/draft/seed': {
 				inputSchema: never;
 				outputSchema: never;
@@ -160,6 +166,12 @@ declare module '@agentuity/frontend' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			reset: {
+				/**
+				 * Route: POST /api/draft/reset
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			seed: {
 				/**
 				 * Route: POST /api/draft/seed
@@ -225,6 +237,12 @@ declare module '@agentuity/react' {
 				params: never;
 			};
 	'GET /api/draft/players': {
+				inputSchema: never;
+				outputSchema: never;
+				stream: false;
+				params: never;
+			};
+	'POST /api/draft/reset': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
@@ -310,6 +328,12 @@ declare module '@agentuity/react' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
+			reset: {
+				/**
+				 * Route: POST /api/draft/reset
+				 */
+				post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
+			};
 			seed: {
 				/**
 				 * Route: POST /api/draft/seed
@@ -387,6 +411,12 @@ const _rpcRouteMetadata = {
 						"get": {
 								"type": "api",
 								"path": "/api/draft/players"
+						}
+				},
+				"reset": {
+						"post": {
+								"type": "api",
+								"path": "/api/draft/reset"
 						}
 				},
 				"seed": {

@@ -32,7 +32,7 @@ import { TOOL_BUDGET, MAX_STEPS } from './drafter-runtime-config';
 // ---------------------------------------------------------------------------
 
 export const DrafterInputSchema = s.object({
-	teamIndex: s.number().describe('Team index (0-11)'),
+	teamIndex: s.number().describe('Team index (0-7)'),
 	teamName: s.string().describe('Team display name'),
 	roster: RosterSchema.describe('Current team roster'),
 	availablePlayers: s.array(PlayerSchema).describe('Players still available'),
@@ -136,7 +136,7 @@ export function buildUserPrompt(
 		return `  - ID: ${p.playerId} | ${p.name} | ${p.position} | ${p.team} | Rank: ${p.rank} | Tier: ${p.tier} | Age: ${p.age} | Bye: ${p.byeWeek} | ${valueLabel}`;
 	});
 
-	// Format recent picks (last 12, roughly the last round)
+	// Format recent picks (last 12)
 	const recentPicks = allPicks.slice(-12);
 	const recentPickLines = recentPicks.map(
 		(p) => `  Pick ${p.pickNumber} (Team ${p.teamIndex + 1}): ${p.playerName} (${p.position})`,
@@ -218,7 +218,7 @@ export function buildToolOrientedPrompt(
 		.map((slot) => (slot === 'SUPERFLEX' ? 'SUPERFLEX (QB/RB/WR/TE)' : slot))
 		.join(', ');
 
-	// Format recent picks (last 12, roughly the last round)
+	// Format recent picks (last 12)
 	const recentPicks = allPicks.slice(-12);
 	const recentPickLines = recentPicks.map(
 		(p) => `  Pick ${p.pickNumber} (Team ${p.teamIndex + 1}): ${p.playerName} (${p.position})`,

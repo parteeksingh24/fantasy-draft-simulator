@@ -172,8 +172,8 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 				teamIndex: z
 					.number()
 					.min(0)
-					.max(11)
-					.describe('Team index (0-11)'),
+					.max(7)
+					.describe('Team index (0-7)'),
 			}),
 			execute: async ({ teamIndex }) => {
 				const result = await deps.kv.get<Roster>(KV_TEAM_ROSTERS, `team-${teamIndex}`);

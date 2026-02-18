@@ -47,7 +47,7 @@ function weightedRandomPick(): string {
 /**
  * Assign personas to all teams in the draft.
  *
- * @param numTeams - Total number of teams (typically 12)
+ * @param numTeams - Total number of teams (typically 8)
  * @param humanTeamIndex - The index of the human-controlled team (0-based)
  * @returns Array of PersonaAssignment, one per team. The human slot has persona 'human'.
  */

@@ -98,7 +98,7 @@ export interface TeamShiftSummary {
 	topCategory: ShiftCategory | null;
 }
 
-export const NUM_TEAMS = 12;
+export const NUM_TEAMS = 8;
 export const NUM_ROUNDS = 5;
 
 export const POSITION_COLORS: Record<Position, { text: string; bg: string; border: string }> = {
@@ -111,7 +111,6 @@ export const POSITION_COLORS: Record<Position, { text: string; bg: string; borde
 export const TEAM_NAMES = [
 	'Team 1', 'Team 2', 'Team 3', 'Team 4',
 	'Team 5', 'Team 6', 'Team 7', 'Team 8',
-	'Team 9', 'Team 10', 'Team 11', 'Team 12',
 ];
 
 export const PERSONA_DESCRIPTIONS: Record<string, string> = {

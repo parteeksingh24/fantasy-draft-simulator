@@ -126,7 +126,7 @@ export function DraftControls({
 							Picks
 						</span>
 						<span className="text-sm text-gray-300 font-mono">
-							{board.picks.length} / 60
+							{board.picks.length} / {NUM_TEAMS * NUM_ROUNDS}
 						</span>
 					</div>
 				)}

@@ -390,7 +390,7 @@ export function App() {
 								Fantasy Draft Simulator
 							</h1>
 							<p className="text-xs text-gray-600 mt-0.5">
-								AI-powered 12-team snake draft
+								AI-powered 8-team snake draft
 							</p>
 						</div>
 						{!draftComplete && isHumanTurn && (
@@ -475,7 +475,7 @@ export function App() {
 											Fantasy Draft Simulator
 										</h1>
 										<p className="text-base text-gray-400 mb-8 max-w-md mx-auto">
-											11 AI agents with unique strategies will compete against you in a 5-round snake draft.
+											7 AI agents with unique strategies will compete against you in a 5-round snake draft.
 										</p>
 
 										{/* Draft setup */}
@@ -519,7 +519,7 @@ export function App() {
 													{
 														label: 'Multi-Agent',
 														title: 'Multi-Agent Orchestration',
-														desc: '11 AI drafter agents, each with a unique persona and strategy, orchestrated by a commissioner agent. No LLM needed for orchestration.',
+														desc: '7 AI drafter agents, each with a unique persona and strategy, orchestrated by a commissioner agent. No LLM needed for orchestration.',
 													},
 													{
 														label: 'AI Gateway',

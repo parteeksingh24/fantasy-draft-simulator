@@ -26,9 +26,9 @@ export type Player = s.infer<typeof PlayerSchema>;
 
 // Draft pick record
 export const PickSchema = s.object({
-	pickNumber: s.number().describe('Overall pick number (1-60)'),
+	pickNumber: s.number().describe('Overall pick number (1-40)'),
 	round: s.number().describe('Draft round (1-5)'),
-	teamIndex: s.number().describe('Team index (0-11)'),
+	teamIndex: s.number().describe('Team index (0-7)'),
 	playerId: s.string().describe('Selected player ID'),
 	playerName: s.string().describe('Selected player name'),
 	position: PositionSchema.describe('Selected player position'),
@@ -75,7 +75,7 @@ export interface TeamShiftSummary {
 
 // Team roster tracking
 export const RosterSchema = s.object({
-	teamIndex: s.number().describe('Team index (0-11)'),
+	teamIndex: s.number().describe('Team index (0-7)'),
 	teamName: s.string().describe('Team display name'),
 	qb: s.optional(PlayerSchema).describe('Quarterback slot'),
 	rb: s.optional(PlayerSchema).describe('Running back slot'),
@@ -100,7 +100,7 @@ export type CurrentPick = s.infer<typeof CurrentPickSchema>;
 export const DraftSettingsSchema = s.object({
 	numTeams: s.number().describe('Number of teams in the draft'),
 	numRounds: s.number().describe('Number of rounds'),
-	humanTeamIndex: s.number().describe('Which team the human controls (0-11)'),
+	humanTeamIndex: s.number().describe('Which team the human controls (0-7)'),
 });
 
 export type DraftSettings = s.infer<typeof DraftSettingsSchema>;
@@ -160,7 +160,7 @@ export interface ReasoningSummary {
 }
 
 // Draft constants
-export const NUM_TEAMS = 12;
+export const NUM_TEAMS = 8;
 export const NUM_ROUNDS = 5;
 export const TOTAL_PICKS = NUM_TEAMS * NUM_ROUNDS;
 
@@ -168,13 +168,12 @@ export const TOTAL_PICKS = NUM_TEAMS * NUM_ROUNDS;
 export const TEAM_NAMES = [
 	'Team 1', 'Team 2', 'Team 3', 'Team 4',
 	'Team 5', 'Team 6', 'Team 7', 'Team 8',
-	'Team 9', 'Team 10', 'Team 11', 'Team 12',
 ] as const;
 
 /**
  * Calculate snake draft order.
- * Odd rounds (1, 3, 5): picks go 0→11
- * Even rounds (2, 4): picks go 11→0
+ * Odd rounds (1, 3, 5): picks go 0→7
+ * Even rounds (2, 4): picks go 7→0
  */
 export function getSnakeDraftPick(pickNumber: number): { round: number; teamIndex: number } {
 	const round = Math.ceil(pickNumber / NUM_TEAMS);

@@ -63,7 +63,7 @@ const DRAFTER_AGENTS: Record<string, typeof drafterBalanced> = {
 
 const CommissionerInputSchema = s.object({
 	action: s.enum(['start', 'advance', 'pick']).describe('The action to perform'),
-	humanTeamIndex: s.optional(s.number()).describe('Which team the human controls (0-11), used with start action'),
+	humanTeamIndex: s.optional(s.number()).describe('Which team the human controls (0-7), used with start action'),
 	playerId: s.optional(s.string()).describe('Player ID for the human pick, used with pick action'),
 });
 
@@ -162,7 +162,7 @@ const agent = createAgent('commissioner', {
 				ctx.logger.warn('Failed to clean up stale data, continuing with draft start', { error: String(err) });
 			}
 
-			// Initialize all 12 team rosters, persona assignments, board state, and settings in parallel
+			// Initialize all team rosters, persona assignments, board state, and settings in parallel
 			await Promise.all([
 				...Array.from({ length: NUM_TEAMS }, (_, i) =>
 					ctx.kv.set(KV_TEAM_ROSTERS, `team-${i}`, createEmptyRoster(i), { ttl: null }),

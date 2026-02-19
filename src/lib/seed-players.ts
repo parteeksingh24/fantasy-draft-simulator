@@ -22,6 +22,9 @@ interface SleeperPlayer {
 
 type SleeperResponse = Record<string, SleeperPlayer>;
 
+// Narrowed type for a draftable player: valid fantasy position and active NFL team.
+type DraftablePlayer = SleeperPlayer & { position: Player['position']; team: string };
+
 // Keep bye weeks keyed by NFL season year so updates are localized.
 // If the current season is not listed yet, we fall back to the latest known season map.
 const FALLBACK_BYE_WEEK_SEASON = 2025;
@@ -78,10 +81,21 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isDraftable(p: SleeperPlayer): p is DraftablePlayer {
+	if (!isValidPosition(p.position)) return false;
+	if (!p.active) return false;
+	if (p.status && STATUS_DENYLIST.has(p.status.trim().toLowerCase())) return false;
+	if (SLEEPER_BLOCKLIST.has(p.player_id)) return false;
+	if (!p.search_rank || p.search_rank === 999999) return false;
+	if (!p.team || p.team === '') return false;
+	if (p.years_exp !== undefined && p.years_exp > 15) return false;
+	return true;
+}
+
 /**
  * Fetch all players from Sleeper API and filter to fantasy-relevant players.
  */
-async function fetchSleeperPlayers(): Promise<SleeperPlayer[]> {
+async function fetchSleeperPlayers(): Promise<DraftablePlayer[]> {
 	let lastError: unknown;
 
 	for (let attempt = 0; attempt <= SLEEPER_FETCH_RETRIES; attempt++) {
@@ -98,30 +112,7 @@ async function fetchSleeperPlayers(): Promise<SleeperPlayer[]> {
 			const data: SleeperResponse = await response.json();
 
 			return Object.values(data)
-				.filter((p) => {
-					// Must be a valid fantasy position
-					if (!isValidPosition(p.position)) return false;
-
-					// Must be active
-					if (!p.active) return false;
-
-					// Check status against denylist (catches more phantom entries)
-					if (p.status && STATUS_DENYLIST.has(p.status.trim().toLowerCase())) return false;
-
-					// Exclude known phantom players
-					if (SLEEPER_BLOCKLIST.has(p.player_id)) return false;
-
-					// Must have a search rank (for sorting)
-					if (!p.search_rank || p.search_rank === 999999) return false;
-
-					// Must have a current NFL team (filter out free agents and retired)
-					if (!p.team || p.team === '') return false;
-
-					// Must have recent experience (filter out long-retired players)
-					if (p.years_exp !== undefined && p.years_exp > 15) return false;
-
-					return true;
-				})
+				.filter(isDraftable)
 				.sort((a, b) => a.search_rank - b.search_rank)
 				.slice(0, TOP_N_PLAYERS);
 		} catch (error) {
@@ -151,21 +142,18 @@ function calculateTier(searchRank: number): number {
 }
 
 /**
- * Map a Sleeper player to our Player type.
+ * Map a draftable player to our Player type.
  */
-function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer): Player {
-	const team = sleeperPlayer.team || 'FA';
-	const byeWeek = resolveByeWeek(team);
-	const rank = sleeperPlayer.search_rank;
-	const tier = calculateTier(sleeperPlayer.search_rank);
+function mapSleeperToPlayer(sleeperPlayer: DraftablePlayer): Player {
+	const byeWeek = resolveByeWeek(sleeperPlayer.team);
 
 	return {
 		playerId: sleeperPlayer.player_id,
 		name: sleeperPlayer.full_name,
-		position: sleeperPlayer.position as Player['position'],
-		team,
-		rank,
-		tier,
+		position: sleeperPlayer.position,
+		team: sleeperPlayer.team,
+		rank: sleeperPlayer.search_rank,
+		tier: calculateTier(sleeperPlayer.search_rank),
 		age: sleeperPlayer.age || 25,
 		byeWeek,
 	};

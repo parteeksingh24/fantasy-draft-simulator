@@ -2,6 +2,8 @@
 
 8-team AI mock draft simulator built on [Agentuity](https://agentuity.dev). 7 AI agents with distinct drafting personas compete against 1 human player in a 5-round SUPERFLEX snake draft. Each agent uses a different LLM from a different provider, calls tools to research players, and adapts strategy based on board dynamics.
 
+[![Watch the demo](https://img.youtube.com/vi/yJaRJKEQafM/maxresdefault.jpg)](https://www.youtube.com/watch?v=yJaRJKEQafM)
+
 ## Getting Started
 
 ```bash

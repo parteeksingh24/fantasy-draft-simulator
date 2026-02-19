@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { anthropic } from '@ai-sdk/anthropic';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-youth-movement', {
 	description: 'Youth-focused drafter that targets players under 26 for upside and trajectory.',
@@ -17,6 +17,6 @@ Young players have more upside, longer career windows, and are still ascending i
 You will take a slightly lower-ranked young player over a higher-ranked aging veteran because you are investing in trajectory, not just current production. The only exception is if a veteran 28+ is available at a massive discount (fallen 15+ picks past their rank) and no comparable young player exists. Even then, you prefer youth. Build a roster that gets better over time, not one that peaks today and crumbles tomorrow.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: anthropic('claude-haiku-4-5'),
+		model: DRAFTER_MODELS['drafter-youth-movement']!,
 	}),
 });

@@ -162,7 +162,7 @@ function mapSleeperToPlayer(sleeperPlayer: SleeperPlayer): Player {
 	return {
 		playerId: sleeperPlayer.player_id,
 		name: sleeperPlayer.full_name,
-		position: sleeperPlayer.position as any,
+		position: sleeperPlayer.position as Player['position'],
 		team,
 		rank,
 		tier,

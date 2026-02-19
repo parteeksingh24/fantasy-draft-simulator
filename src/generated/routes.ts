@@ -85,12 +85,6 @@ declare module '@agentuity/frontend' {
 				stream: false;
 				params: never;
 			};
-	'POST /api/draft/test/trigger-shift': {
-				inputSchema: never;
-				outputSchema: never;
-				stream: false;
-				params: never;
-			};
 	'GET /api/health': {
 				inputSchema: never;
 				outputSchema: never;
@@ -190,14 +184,6 @@ declare module '@agentuity/frontend' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
-			test: {
-				triggerShift: {
-					/**
-					 * Route: POST /api/draft/test/trigger-shift
-					 */
-					post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
-				};
-			};
 		};
 		health: {
 			/**
@@ -261,12 +247,6 @@ declare module '@agentuity/react' {
 				params: never;
 			};
 	'GET /api/draft/strategies': {
-				inputSchema: never;
-				outputSchema: never;
-				stream: false;
-				params: never;
-			};
-	'POST /api/draft/test/trigger-shift': {
 				inputSchema: never;
 				outputSchema: never;
 				stream: false;
@@ -352,14 +332,6 @@ declare module '@agentuity/react' {
 				 */
 				get: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
 			};
-			test: {
-				triggerShift: {
-					/**
-					 * Route: POST /api/draft/test/trigger-shift
-					 */
-					post: { input: never; output: never; type: 'api'; params: never; paramsTuple: [] };
-				};
-			};
 		};
 		health: {
 			/**
@@ -435,14 +407,6 @@ const _rpcRouteMetadata = {
 						"get": {
 								"type": "api",
 								"path": "/api/draft/strategies"
-						}
-				},
-				"test": {
-						"triggerShift": {
-								"post": {
-										"type": "api",
-										"path": "/api/draft/test/trigger-shift"
-								}
 						}
 				}
 		},

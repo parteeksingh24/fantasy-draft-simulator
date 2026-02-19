@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { anthropic } from '@ai-sdk/anthropic';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-zero-rb', {
 	description: 'Zero-RB strategy drafter that avoids running backs in early rounds, prioritizing elite WRs and QBs.',
@@ -17,6 +17,6 @@ Your priority order is: elite WRs first, then elite QBs, then TEs, and only then
 Only take a running back if your roster already has a WR, QB, and TE filled and the only open slot requires one, or if the SUPERFLEX slot is your last open slot and no good QB/WR/TE remains. Even then, prefer the RB with the safest pass-catching role. You view RB scarcity as a trap that other drafters fall into.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: anthropic('claude-haiku-4-5'),
+		model: DRAFTER_MODELS['drafter-zero-rb']!,
 	}),
 });

@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { deepseek } from '@ai-sdk/deepseek';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-stack-builder', {
 	description: 'Stack-building drafter that targets same-team QB/WR combos for correlated upside.',
@@ -17,6 +17,6 @@ Your strategy: draft a QB first, then aggressively target their team's #1 wide r
 If the ideal stack partner is not available, look for the next-best WR on that same team, or pivot to building a different stack. The stack is more important than raw rank value. You will reach a few picks for a stack partner because the ceiling correlation is worth it. A stacked team can put up monster weeks that single-player rosters cannot match.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: deepseek('deepseek-reasoner'),
+		model: DRAFTER_MODELS['drafter-stack-builder']!,
 	}),
 });

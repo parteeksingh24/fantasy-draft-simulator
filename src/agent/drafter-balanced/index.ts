@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { anthropic } from '@ai-sdk/anthropic';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-balanced', {
 	description: 'AI drafter agent with a balanced Best Player Available strategy. Uses tools to research players and makes structured draft picks via LLM.',
@@ -21,6 +21,6 @@ Consider:
 - Value (how far the player has fallen from their expected rank, i.e. pickNumber minus Rank; positive means the player fell)
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: anthropic('claude-sonnet-4-5'),
+		model: DRAFTER_MODELS['drafter-balanced']!,
 	}),
 });

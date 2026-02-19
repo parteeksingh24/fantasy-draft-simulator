@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { openai } from '@ai-sdk/openai';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-bold', {
 	description: 'Aggressive, high-upside drafter that swings for the fences on breakout candidates.',
@@ -17,6 +17,6 @@ You will happily take a player 10 picks early if you believe in their upside. Yo
 When evaluating candidates, look for younger players with explosive athleticism, players in new situations with expanded roles, and anyone the consensus is sleeping on. If a player has "safe floor, low ceiling" written all over them, pass. You want fireworks, not a floor.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: openai('gpt-5-mini'),
+		model: DRAFTER_MODELS['drafter-bold']!,
 	}),
 });

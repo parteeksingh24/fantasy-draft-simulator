@@ -21,13 +21,9 @@ import {
 	type Roster,
 	type BoardState,
 	type DraftSettings,
-	type Pick,
-	type CurrentPick,
 	PickSchema,
 	BoardStateSchema,
-	getSnakeDraftPick,
 	canDraftPosition,
-	assignRosterSlot,
 	KV_DRAFT_STATE,
 	KV_TEAM_ROSTERS,
 	KV_AGENT_STRATEGIES,
@@ -63,9 +59,8 @@ const DRAFTER_AGENTS: Record<string, typeof drafterBalanced> = {
 // --- Schemas ---
 
 const CommissionerInputSchema = s.object({
-	action: s.enum(['start', 'advance', 'pick']).describe('The action to perform'),
+	action: s.enum(['start', 'advance']).describe('The action to perform'),
 	humanTeamIndex: s.optional(s.number()).describe('Which team the human controls (0-7), used with start action'),
-	playerId: s.optional(s.string()).describe('Player ID for the human pick, used with pick action'),
 });
 
 const CommissionerOutputSchema = s.object({
@@ -100,17 +95,6 @@ function createInitialBoardState(humanTeamIndex: number): BoardState {
 			humanTeamIndex,
 		},
 		draftComplete: false,
-	};
-}
-
-function advanceCurrentPick(currentPickNumber: number, settings: DraftSettings): CurrentPick {
-	const nextPickNumber = currentPickNumber + 1;
-	const { round, teamIndex } = getSnakeDraftPick(nextPickNumber);
-	return {
-		pickNumber: nextPickNumber,
-		round,
-		teamIndex,
-		isHuman: teamIndex === settings.humanTeamIndex,
 	};
 }
 
@@ -221,7 +205,7 @@ const agent = createAgent('commissioner', {
 			if (currentPick.isHuman) {
 				return {
 					success: false,
-					message: `It is the human player's turn (${TEAM_NAMES[currentPick.teamIndex]}, pick #${currentPick.pickNumber}). Use action "pick" instead.`,
+					message: `It is the human player's turn (${TEAM_NAMES[currentPick.teamIndex]}, pick #${currentPick.pickNumber}). Use POST /draft/pick instead.`,
 					boardState,
 					draftComplete: false,
 				};
@@ -411,163 +395,10 @@ const agent = createAgent('commissioner', {
 			};
 		}
 
-		// =====================
-		// ACTION: pick (Human pick)
-		// =====================
-		if (action === 'pick') {
-			const { playerId } = input;
-
-			if (!playerId) {
-				return {
-					success: false,
-					message: 'playerId is required for the "pick" action.',
-					boardState: createInitialBoardState(0),
-					draftComplete: false,
-				};
-			}
-
-			// Read current board state
-			const boardResult = await ctx.kv.get<BoardState>(KV_DRAFT_STATE, KEY_BOARD_STATE);
-			if (!boardResult.exists) {
-				return {
-					success: false,
-					message: 'No draft in progress. Use action "start" first.',
-					boardState: createInitialBoardState(0),
-					draftComplete: false,
-				};
-			}
-
-			const boardState = boardResult.data;
-
-			if (boardState.draftComplete) {
-				return {
-					success: false,
-					message: 'Draft is already complete.',
-					boardState,
-					draftComplete: true,
-				};
-			}
-
-			const { currentPick, settings } = boardState;
-
-			// Verify it's the human's turn
-			if (!currentPick.isHuman) {
-				return {
-					success: false,
-					message: `It is not the human's turn. ${TEAM_NAMES[currentPick.teamIndex]} (AI) is on the clock at pick #${currentPick.pickNumber}. Use action "advance" instead.`,
-					boardState,
-					draftComplete: false,
-				};
-			}
-
-			ctx.logger.info('Human pick', {
-				pickNumber: currentPick.pickNumber,
-				round: currentPick.round,
-				teamIndex: currentPick.teamIndex,
-				playerId,
-			});
-
-			// Read available players
-			const playersResult = await ctx.kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS);
-			if (!playersResult.exists || playersResult.data.length === 0) {
-				return {
-					success: false,
-					message: 'No available players found.',
-					boardState,
-					draftComplete: false,
-				};
-			}
-			const availablePlayers = playersResult.data;
-
-			// Find the player
-			const pickedPlayer = availablePlayers.find((p) => p.playerId === playerId);
-			if (!pickedPlayer) {
-				return {
-					success: false,
-					message: `Player ${playerId} is not available. They may have already been drafted.`,
-					boardState,
-					draftComplete: false,
-				};
-			}
-
-			// Read team roster (lazily create if missing)
-			const rosterResult = await ctx.kv.get<Roster>(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`);
-			const roster: Roster = rosterResult.exists
-				? rosterResult.data
-				: createEmptyRoster(currentPick.teamIndex);
-
-			// Validate position fits a roster slot
-			if (!canDraftPosition(roster, pickedPlayer.position)) {
-				return {
-					success: false,
-					message: `Cannot draft ${pickedPlayer.name} (${pickedPlayer.position}) - no available roster slot. Check your roster for open slots.`,
-					boardState,
-					draftComplete: false,
-				};
-			}
-
-			// Record the pick
-			const pick: Pick = {
-				pickNumber: currentPick.pickNumber,
-				round: currentPick.round,
-				teamIndex: currentPick.teamIndex,
-				playerId: pickedPlayer.playerId,
-				playerName: pickedPlayer.name,
-				position: pickedPlayer.position,
-				reasoning: 'Human selection',
-				confidence: 1.0,
-			};
-
-			// Update roster
-			const slot = assignRosterSlot(roster, pickedPlayer.position);
-			if (slot) {
-				const slotKey = slot === 'SUPERFLEX' ? 'superflex' : slot.toLowerCase() as 'qb' | 'rb' | 'wr' | 'te';
-				(roster as Record<string, unknown>)[slotKey] = pickedPlayer;
-			}
-
-			// Remove player from available list
-			const updatedAvailable = availablePlayers.filter((p) => p.playerId !== pickedPlayer.playerId);
-
-			// Update board state
-			boardState.picks.push(pick);
-
-			const isLastPick = currentPick.pickNumber >= TOTAL_PICKS;
-			if (isLastPick) {
-				boardState.draftComplete = true;
-				boardState.currentPick = currentPick;
-			} else {
-				boardState.currentPick = advanceCurrentPick(currentPick.pickNumber, settings);
-			}
-
-			// Write all updated state to KV in parallel
-			await Promise.all([
-				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: DRAFT_KV_TTL }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: DRAFT_KV_TTL }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: DRAFT_KV_TTL }),
-			]);
-
-			ctx.logger.info('Human pick recorded', {
-				pick: pick.pickNumber,
-				team: TEAM_NAMES[currentPick.teamIndex],
-				player: pickedPlayer.name,
-				position: pickedPlayer.position,
-				slot,
-				draftComplete: boardState.draftComplete,
-			});
-
-			return {
-				success: true,
-				message: `${TEAM_NAMES[currentPick.teamIndex]} selects ${pickedPlayer.name} (${pickedPlayer.position}) with pick #${currentPick.pickNumber}.`,
-				pick,
-				boardState,
-				draftComplete: boardState.draftComplete,
-			};
-		}
-
 		// Unknown action fallback
 		return {
 			success: false,
-			message: `Unknown action: ${action}. Valid actions are: start, advance, pick.`,
+			message: `Unknown action: ${action}. Valid actions are: start, advance.`,
 			boardState: createInitialBoardState(0),
 			draftComplete: false,
 		};

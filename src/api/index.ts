@@ -44,6 +44,64 @@ function summarizeToolResult(toolName: string, result: unknown): unknown {
 	return result;
 }
 
+/**
+ * Drain a streamText fullStream, forwarding thinking tokens, tool calls,
+ * and tool results to the SSE client and optional durable replay stream.
+ * Returns the text accumulated during this drain pass.
+ */
+async function drainFullStream(
+	fullStream: AsyncIterable<any>,
+	sseStream: { writeSSE: (msg: { event: string; data: string }) => Promise<void> },
+	durableStream: { write: (chunk: object) => Promise<void> } | null,
+	toolsUsed: string[],
+): Promise<string> {
+	let text = '';
+	let sseHealthy = true;
+	for await (const part of fullStream) {
+		switch (part.type) {
+			case 'text-delta':
+				text += part.text;
+				if (sseHealthy) {
+					try {
+						await sseStream.writeSSE({ event: 'thinking', data: part.text });
+					} catch {
+						sseHealthy = false;
+					}
+				}
+				durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
+				break;
+			case 'tool-call':
+				if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
+				if (sseHealthy) {
+					try {
+						await sseStream.writeSSE({
+							event: 'tool-call',
+							data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, args: part.input }),
+						});
+					} catch {
+						sseHealthy = false;
+					}
+				}
+				durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
+				break;
+			case 'tool-result':
+				if (sseHealthy) {
+					try {
+						await sseStream.writeSSE({
+							event: 'tool-result',
+							data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, result: summarizeToolResult(part.toolName, part.output) }),
+						});
+					} catch {
+						sseHealthy = false;
+					}
+				}
+				durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
+				break;
+		}
+	}
+	return text;
+}
+
 function normalizeShift(shift: Partial<StrategyShift>): StrategyShift {
 	return {
 		pickNumber: shift.pickNumber ?? 0,
@@ -101,6 +159,10 @@ function buildTeamShiftSummary(shifts: StrategyShift[], picks: BoardState['picks
 }
 
 const api = createRouter();
+
+// Rate limiting: cap concurrent AI streams
+const MAX_CONCURRENT_STREAMS = 3;
+let activeStreams = 0;
 
 // In-flight seed promise to deduplicate concurrent seed calls
 let seedPromise: Promise<Player[]> | null = null;
@@ -215,7 +277,7 @@ api.get('/draft/board', async (c) => {
 	});
 });
 
-// POST /draft/pick - Human makes a pick (uses route-level KV directly to avoid agent KV mismatch)
+// POST /draft/pick - Human makes a pick
 api.post('/draft/pick', async (c) => {
 	const body = await c.req.json().catch(() => ({}));
 	const playerId = typeof body.playerId === 'string' ? body.playerId : undefined;
@@ -293,18 +355,33 @@ api.post('/draft/pick', async (c) => {
 
 // POST /draft/advance - Trigger next AI pick (non-streaming fallback)
 api.post('/draft/advance', async (c) => {
-	const result = await commissioner.run({
-		action: 'advance' as const,
-	});
-
-	return c.json(result);
+	if (activeStreams >= MAX_CONCURRENT_STREAMS) {
+		return c.json({ error: 'Too many concurrent drafts. Please wait.' }, 429);
+	}
+	activeStreams++;
+	try {
+		const result = await commissioner.run({
+			action: 'advance' as const,
+		});
+		return c.json(result);
+	} finally {
+		activeStreams--;
+	}
 });
 
 // GET /draft/advance/stream - SSE streaming endpoint for AI pick with live thinking
 api.get('/draft/advance/stream', sse(async (c, stream) => {
+	if (activeStreams >= MAX_CONCURRENT_STREAMS) {
+		await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'Too many concurrent drafts. Please wait.' }) });
+		stream.close();
+		return;
+	}
+	activeStreams++;
+
 	const logger = c.var.logger;
 	type DurableStream = { id: string; url: string; write: (chunk: object) => Promise<void>; close: () => Promise<void> };
 	let durableStream: DurableStream | null = null as DurableStream | null;
+	const controller = new AbortController();
 
 	try {
 		// 1. Read board state
@@ -323,7 +400,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			return;
 		}
 
-		const { currentPick, settings } = boardState;
+		const { currentPick } = boardState;
 
 		if (currentPick.isHuman) {
 			await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'It is the human player\'s turn' }) });
@@ -339,10 +416,10 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		]);
 
 		const personaAssignments = personaResult.exists ? personaResult.data : [];
-			const teamPersona = personaAssignments.find((a) => a.teamIndex === currentPick.teamIndex);
-			const personaName = teamPersona?.persona ?? 'drafter-balanced';
-			const modelName = DRAFTER_MODEL_NAMES[personaName] ?? 'unknown';
-			const generationMode = getDrafterGenerationMode(personaName);
+		const teamPersona = personaAssignments.find((a) => a.teamIndex === currentPick.teamIndex);
+		const personaName = teamPersona?.persona ?? 'drafter-balanced';
+		const modelName = DRAFTER_MODEL_NAMES[personaName] ?? 'unknown';
+		const generationMode = getDrafterGenerationMode(personaName);
 
 		const roster: Roster = rosterResult.exists
 			? rosterResult.data
@@ -356,15 +433,15 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 		const availablePlayers = playersResult.data;
 
 		// Send initial metadata
-			await stream.writeSSE({
-				event: 'metadata',
-				data: JSON.stringify({
-					persona: personaName,
-					model: modelName,
-					generationMode,
-					teamIndex: currentPick.teamIndex,
-					teamName: TEAM_NAMES[currentPick.teamIndex],
-					pickNumber: currentPick.pickNumber,
+		await stream.writeSSE({
+			event: 'metadata',
+			data: JSON.stringify({
+				persona: personaName,
+				model: modelName,
+				generationMode,
+				teamIndex: currentPick.teamIndex,
+				teamName: TEAM_NAMES[currentPick.teamIndex],
+				pickNumber: currentPick.pickNumber,
 				round: currentPick.round,
 			}),
 		});
@@ -479,13 +556,13 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			hasMeaningfulBoardSignals ? boardAnalysis.summary : undefined,
 		);
 
-			logger.info('Starting SSE stream for AI pick with tools', {
-				persona: personaName,
-				model: modelName,
-				generationMode,
-				pickNumber: currentPick.pickNumber,
-				hasMeaningfulBoardSignals,
-			});
+		logger.info('Starting SSE stream for AI pick with tools', {
+			persona: personaName,
+			model: modelName,
+			generationMode,
+			pickNumber: currentPick.pickNumber,
+			hasMeaningfulBoardSignals,
+		});
 
 		let fullText = '';
 		let streamError: string | null = null;
@@ -513,6 +590,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 					}),
 					// Keep demo picks responsive while still allowing a short tool loop.
 					stopWhen: stepCountIs(MAX_STEPS),
+					abortSignal: controller.signal,
 				})
 				: streamText({
 					model,
@@ -521,43 +599,11 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 					tools,
 					// Keep demo picks responsive while still allowing a short tool loop.
 					stopWhen: stepCountIs(MAX_STEPS),
+					abortSignal: controller.signal,
 				});
 
-			for await (const part of result.fullStream) {
-				switch (part.type) {
-					case 'text-delta':
-						fullText += part.text;
-						initialAttemptText += part.text;
-						await stream.writeSSE({ event: 'thinking', data: part.text });
-						durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
-						break;
-
-					case 'tool-call':
-						if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
-						await stream.writeSSE({
-							event: 'tool-call',
-							data: JSON.stringify({
-								toolCallId: part.toolCallId,
-								name: part.toolName,
-								args: part.input,
-							}),
-						});
-						durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
-						break;
-
-					case 'tool-result':
-						await stream.writeSSE({
-							event: 'tool-result',
-							data: JSON.stringify({
-								toolCallId: part.toolCallId,
-								name: part.toolName,
-								result: summarizeToolResult(part.toolName, part.output),
-							}),
-						});
-						durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
-						break;
-				}
-			}
+			initialAttemptText = await drainFullStream(result.fullStream, stream, durableStream, toolsUsed);
+			fullText += initialAttemptText;
 
 			const output = await result.output;
 			if (typeof output === 'string') {
@@ -580,7 +626,6 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 				if (!structuredPick) {
 					// Retry 1: structured with provider tuning
 					try {
-						let retryStructuredText = '';
 						const retryStructured = streamText({
 							model,
 							system: systemPrompt,
@@ -592,29 +637,13 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 								description: 'Final fantasy draft pick selection.',
 							}),
 							stopWhen: stepCountIs(MAX_STEPS),
+							abortSignal: controller.signal,
 							providerOptions: {
 								anthropic: { structuredOutputMode: 'outputFormat' },
 							},
 						});
-						for await (const part of retryStructured.fullStream) {
-							switch (part.type) {
-								case 'text-delta':
-									fullText += part.text;
-									retryStructuredText += part.text;
-									await stream.writeSSE({ event: 'thinking', data: part.text });
-									durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
-									break;
-								case 'tool-call':
-									if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
-									await stream.writeSSE({ event: 'tool-call', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, args: part.input }) });
-									durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
-									break;
-								case 'tool-result':
-									await stream.writeSSE({ event: 'tool-result', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, result: summarizeToolResult(part.toolName, part.output) }) });
-									durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
-									break;
-							}
-						}
+						const retryStructuredText = await drainFullStream(retryStructured.fullStream, stream, durableStream, toolsUsed);
+						fullText += retryStructuredText;
 						const retryOutput = await retryStructured.output;
 						if (typeof retryOutput === 'string') {
 							const parseText = retryStructuredText.length > 0 ? retryStructuredText : retryOutput;
@@ -629,33 +658,16 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 					// Retry 2: text mode (only if structured retry didn't produce a pick)
 					if (!structuredPick) {
 						try {
-							let retryText = '';
 							const retryResult = streamText({
 								model,
 								system: systemPrompt,
 								prompt: toolOrientedPrompt,
 								tools,
 								stopWhen: stepCountIs(MAX_STEPS),
+								abortSignal: controller.signal,
 							});
-							for await (const part of retryResult.fullStream) {
-								switch (part.type) {
-									case 'text-delta':
-										fullText += part.text;
-										retryText += part.text;
-										await stream.writeSSE({ event: 'thinking', data: part.text });
-										durableStream?.write({ type: 'thinking', text: part.text, ts: Date.now() }).catch(() => {});
-										break;
-									case 'tool-call':
-										if (!toolsUsed.includes(part.toolName)) toolsUsed.push(part.toolName);
-										await stream.writeSSE({ event: 'tool-call', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, args: part.input }) });
-										durableStream?.write({ type: 'tool-call', name: part.toolName, args: part.input, ts: Date.now() }).catch(() => {});
-										break;
-									case 'tool-result':
-										await stream.writeSSE({ event: 'tool-result', data: JSON.stringify({ toolCallId: part.toolCallId, name: part.toolName, result: summarizeToolResult(part.toolName, part.output) }) });
-										durableStream?.write({ type: 'tool-result', name: part.toolName, result: summarizeToolResult(part.toolName, part.output), ts: Date.now() }).catch(() => {});
-										break;
-								}
-							}
+							const retryText = await drainFullStream(retryResult.fullStream, stream, durableStream, toolsUsed);
+							fullText += retryText;
 							structuredPick = parseDrafterOutputFromText(retryText);
 							if (!structuredPick) {
 								fallbackReason = retryText.trim().length > 0 ? 'invalid_json' : 'no_output';
@@ -829,6 +841,7 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			hasReplay: !!durableStream,
 		});
 	} catch (err) {
+		controller.abort();
 		logger.error('SSE handler error', { error: String(err) });
 		try { await durableStream?.close(); } catch {}
 		try {
@@ -837,6 +850,8 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			// Stream may already be closed
 		}
 		stream.close();
+	} finally {
+		activeStreams--;
 	}
 }));
 
@@ -899,14 +914,15 @@ api.post('/draft/end', async (c) => {
 	return c.json({ success: true, message: 'Draft ended', boardState: updatedBoard });
 });
 
-// POST /draft/reset - Reset draft state (preserves player seed data)
+// POST /draft/reset - Reset all draft state (including player seed data, which is re-fetched on next start)
 api.post('/draft/reset', async (c) => {
 	c.var.logger.info('Resetting draft state');
 
 	await Promise.all([
-		// Delete board + settings but preserve player seed data (KEY_AVAILABLE_PLAYERS, seeded-at)
 		c.var.kv.delete(KV_DRAFT_STATE, KEY_BOARD_STATE),
 		c.var.kv.delete(KV_DRAFT_STATE, KEY_SETTINGS),
+		c.var.kv.delete(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS),
+		c.var.kv.delete(KV_DRAFT_STATE, 'seeded-at'),
 		// Delete entire namespaces for draft-specific data
 		// .catch() guards against local dev where deleteNamespace is not implemented
 		c.var.kv.deleteNamespace(KV_TEAM_ROSTERS).catch(() => {}),
@@ -919,41 +935,5 @@ api.post('/draft/reset', async (c) => {
 	return c.json({ success: true });
 });
 
-// POST /draft/test/trigger-shift - Inject a fake strategy shift for UI testing
-api.post('/draft/test/trigger-shift', async (c) => {
-	const body = await c.req.json().catch(() => ({}));
-	const teamIndex = typeof body.teamIndex === 'number' ? body.teamIndex : 0;
-
-	if (teamIndex < 0 || teamIndex >= NUM_TEAMS) {
-		return c.json({ error: `teamIndex must be 0-${NUM_TEAMS - 1}` }, 400);
-	}
-
-	// Read persona assignments to get the team's persona
-	const personasResult = await c.var.kv.get<PersonaAssignment[]>(KV_AGENT_STRATEGIES, 'persona-assignments');
-	const personaAssignments = personasResult.exists ? personasResult.data : [];
-	const teamPersona = personaAssignments.find((a) => a.teamIndex === teamIndex);
-	const personaName = teamPersona?.persona ?? 'drafter-balanced';
-
-	const fakeShift = {
-		pickNumber: 999,
-		teamIndex,
-		persona: personaName,
-		trigger: 'TEST: Manually triggered strategy shift for UI testing.',
-		reasoning: 'This is a test shift injected via the /draft/test/trigger-shift endpoint.',
-		playerPicked: 'Test Player',
-		position: 'QB' as const,
-		category: 'strategy-break' as const,
-		severity: 'major' as const,
-	};
-
-	// Append to existing shifts
-	const existingShifts = await c.var.kv.get<typeof fakeShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
-	const allShifts = existingShifts.exists ? [...existingShifts.data, fakeShift] : [fakeShift];
-	await c.var.kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: DRAFT_KV_TTL });
-
-	c.var.logger.info('Test strategy shift injected', { teamIndex, persona: personaName });
-
-	return c.json({ success: true, shift: fakeShift, totalShifts: allShifts.length });
-});
 
 export default api;

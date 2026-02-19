@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { anthropic } from '@ai-sdk/anthropic';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-value-hunter', {
 	description: 'Pure value-based drafter that picks whoever has fallen the furthest past their expected rank.',
@@ -17,6 +17,6 @@ Calculate value as: current pick number minus player Rank. The bigger the positi
 You believe most drafters make emotional, position-driven decisions that create market inefficiencies. Your job is to capitalize on those inefficiencies. If a top-5 WR falls to a mid-round pick because everyone panicked on RBs, you snatch them up happily. Positional need is a tiebreaker, never the primary factor. Trust the math.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: anthropic('claude-haiku-4-5'),
+		model: DRAFTER_MODELS['drafter-value-hunter']!,
 	}),
 });

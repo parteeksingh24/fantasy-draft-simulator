@@ -34,17 +34,14 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, teamShiftS
 		teamShiftSummaryMap.set(summary.teamIndex, summary);
 	}
 
-	function getPersonaForTeam(teamIndex: number): string {
-		if (!personas) return '';
+	function getPersonaInfo(teamIndex: number): { display: string; key: string } {
+		if (!personas) return { display: '', key: '' };
 		const assignment = personas.find((p) => p.teamIndex === teamIndex);
-		if (!assignment) return '';
-		return PERSONA_DISPLAY_NAMES[assignment.persona] ?? assignment.persona;
-	}
-
-	function getPersonaKeyForTeam(teamIndex: number): string {
-		if (!personas) return '';
-		const assignment = personas.find((p) => p.teamIndex === teamIndex);
-		return assignment?.persona ?? '';
+		if (!assignment) return { display: '', key: '' };
+		return {
+			display: PERSONA_DISPLAY_NAMES[assignment.persona] ?? assignment.persona,
+			key: assignment.persona,
+		};
 	}
 
 	// Check if a cell is the current on-the-clock pick
@@ -75,8 +72,7 @@ export function DraftBoard({ board, humanTeamIndex, personas, shifts, teamShiftS
 				</div>
 					{Array.from({ length: NUM_TEAMS }, (_, i) => {
 						const isHuman = i === humanTeamIndex;
-						const persona = getPersonaForTeam(i);
-						const personaKey = getPersonaKeyForTeam(i);
+						const { display: persona, key: personaKey } = getPersonaInfo(i);
 						const description = PERSONA_DESCRIPTIONS[personaKey] ?? '';
 						const modelName = PERSONA_MODELS[personaKey] ?? '';
 						const summary = teamShiftSummaryMap.get(i);

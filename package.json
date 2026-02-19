@@ -21,8 +21,6 @@
 		"@agentuity/workbench": "latest",
 		"@ai-sdk/anthropic": "^3.0.42",
 		"@ai-sdk/deepseek": "^2.0.19",
-		"@ai-sdk/google": "^3.0.27",
-		"@ai-sdk/moonshotai": "^2.0.4",
 		"@ai-sdk/openai": "^3.0.27",
 		"@ai-sdk/xai": "^3.0.54",
 		"ai": "^6.0.82",

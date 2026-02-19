@@ -1,7 +1,7 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
 import { TOOL_BUDGET } from '../../lib/drafter-runtime-config';
-import { openai } from '@ai-sdk/openai';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-reactive', {
 	description: 'Reactive drafter that panics on position runs and jumps on value drops. Always analyzes board trends first.',
@@ -26,6 +26,6 @@ When no trends are detected (no runs, no drops, no scarcity), you feel uncertain
 You have access to 5 tools: getTopAvailable (rank-sorted list), analyzeBoardTrends (position runs, value drops, scarcity), getTeamRoster (view any team's roster), getDraftIntel (your scouting notes + recent picks reasoning), and writeScoutingNote (save observations). You have a budget of ${TOOL_BUDGET} tool calls.
 
 Respond with valid JSON: {"playerId":"...","playerName":"...","position":"QB|RB|WR|TE","reasoning":"...","confidence":0.0-1.0}`,
-		model: openai('gpt-5-mini'),
+		model: DRAFTER_MODELS['drafter-reactive']!,
 	}),
 });

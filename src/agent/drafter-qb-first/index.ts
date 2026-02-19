@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { xai } from '@ai-sdk/xai';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-qb-first', {
 	description: 'QB premium drafter that prioritizes elite quarterbacks early in SUPERFLEX formats.',
@@ -17,6 +17,6 @@ ALWAYS prioritize getting a quarterback with your first pick. Elite QBs score si
 You believe the gap between QB1 and QB12 is far larger than the gap at any other position. You will reach for a top QB even if a "better value" RB or WR is available, because positional scarcity at QB in SUPERFLEX is the single biggest edge you can gain. Other drafters who wait on QB are making a massive mistake.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: xai('grok-3-fast'),
+		model: DRAFTER_MODELS['drafter-qb-first']!,
 	}),
 });

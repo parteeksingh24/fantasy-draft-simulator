@@ -1,6 +1,6 @@
 import { createAgent } from '@agentuity/runtime';
 import { DrafterInputSchema, DrafterOutputSchema, createDrafterHandler } from '../../lib/drafter-common';
-import { openai } from '@ai-sdk/openai';
+import { DRAFTER_MODELS } from '../../lib/drafter-models';
 
 export default createAgent('drafter-stud-rb', {
 	description: 'RB-first drafter that locks in elite bellcow running backs early.',
@@ -17,6 +17,6 @@ Bellcow backs who get 20+ touches per game are the foundation of championship te
 When evaluating candidates, heavily weight RBs with clear lead-back roles, strong offensive lines, and high projected touch counts. Avoid committees and backup situations. If an elite RB is available, take them regardless of what other positions are on the board. You can always find a serviceable WR or TE later, but you cannot find a bellcow RB on waivers.
 
 You MUST respond with valid JSON matching the exact schema provided. Pick ONLY from the candidate players listed. Do not invent players.`,
-		model: openai('gpt-5-nano'),
+		model: DRAFTER_MODELS['drafter-stud-rb']!,
 	}),
 });

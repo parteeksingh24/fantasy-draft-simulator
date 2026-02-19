@@ -26,9 +26,9 @@ export type Player = s.infer<typeof PlayerSchema>;
 
 // Draft pick record
 export const PickSchema = s.object({
-	pickNumber: s.number().describe('Overall pick number (1-40)'),
-	round: s.number().describe('Draft round (1-5)'),
-	teamIndex: s.number().describe('Team index (0-7)'),
+	pickNumber: s.number().describe('Overall pick number'),
+	round: s.number().describe('Draft round'),
+	teamIndex: s.number().describe('Team index (0-based)'),
 	playerId: s.string().describe('Selected player ID'),
 	playerName: s.string().describe('Selected player name'),
 	position: PositionSchema.describe('Selected player position'),
@@ -153,7 +153,7 @@ export interface ReasoningSummary {
 	model: string;
 	playerId: string;
 	playerName: string;
-	position: string;
+	position: Position;
 	summary: string;
 	toolsUsed: string[];
 	confidence: number;

@@ -7,7 +7,7 @@
 ## Getting Started
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/parteeksingh24/fantasy-draft-simulator.git
 cd fantasy-draft-simulator
 bun install
 agentuity login

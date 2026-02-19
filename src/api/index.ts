@@ -160,10 +160,6 @@ function buildTeamShiftSummary(shifts: StrategyShift[], picks: BoardState['picks
 
 const api = createRouter();
 
-// Rate limiting: cap concurrent AI streams
-const MAX_CONCURRENT_STREAMS = 3;
-let activeStreams = 0;
-
 // In-flight seed promise to deduplicate concurrent seed calls
 let seedPromise: Promise<Player[]> | null = null;
 
@@ -355,29 +351,14 @@ api.post('/draft/pick', async (c) => {
 
 // POST /draft/advance - Trigger next AI pick (non-streaming fallback)
 api.post('/draft/advance', async (c) => {
-	if (activeStreams >= MAX_CONCURRENT_STREAMS) {
-		return c.json({ error: 'Too many concurrent drafts. Please wait.' }, 429);
-	}
-	activeStreams++;
-	try {
-		const result = await commissioner.run({
-			action: 'advance' as const,
-		});
-		return c.json(result);
-	} finally {
-		activeStreams--;
-	}
+	const result = await commissioner.run({
+		action: 'advance' as const,
+	});
+	return c.json(result);
 });
 
 // GET /draft/advance/stream - SSE streaming endpoint for AI pick with live thinking
 api.get('/draft/advance/stream', sse(async (c, stream) => {
-	if (activeStreams >= MAX_CONCURRENT_STREAMS) {
-		await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'Too many concurrent drafts. Please wait.' }) });
-		stream.close();
-		return;
-	}
-	activeStreams++;
-
 	const logger = c.var.logger;
 	type DurableStream = { id: string; url: string; write: (chunk: object) => Promise<void>; close: () => Promise<void> };
 	let durableStream: DurableStream | null = null as DurableStream | null;
@@ -850,8 +831,6 @@ api.get('/draft/advance/stream', sse(async (c, stream) => {
 			// Stream may already be closed
 		}
 		stream.close();
-	} finally {
-		activeStreams--;
 	}
 }));
 

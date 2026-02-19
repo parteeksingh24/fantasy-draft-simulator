@@ -8,7 +8,7 @@
  * so both paths stay in sync.
  */
 import type { Player, Roster, ReasoningSummary } from './types';
-import { KV_PICK_REASONING, canDraftPosition } from './types';
+import { KV_PICK_REASONING, DRAFT_KV_TTL, canDraftPosition } from './types';
 import { DRAFTER_MODEL_NAMES } from './drafter-models';
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ export function buildFallbackReasoning(
 // ---------------------------------------------------------------------------
 
 interface KVWriter {
-	set: (namespace: string, key: string, value: unknown, options?: { ttl: null }) => Promise<void>;
+	set: (namespace: string, key: string, value: unknown, options?: { ttl: number | null }) => Promise<void>;
 }
 
 export interface FinalizePickOpts {
@@ -117,7 +117,7 @@ export async function finalizeAndRecordPick(
 		...(opts.streamId ? { streamId: opts.streamId, streamUrl: opts.streamUrl } : {}),
 	};
 
-	await kv.set(KV_PICK_REASONING, `pick-${opts.pickNumber}`, reasoningSummary, { ttl: null });
+	await kv.set(KV_PICK_REASONING, `pick-${opts.pickNumber}`, reasoningSummary, { ttl: DRAFT_KV_TTL });
 
 	return reasoningSummary;
 }

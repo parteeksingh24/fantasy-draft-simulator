@@ -122,6 +122,9 @@ export const KV_AGENT_STRATEGIES = 'agent-strategies';
 export const KV_SCOUTING_NOTES = 'team-scouting-notes';
 export const KV_PICK_REASONING = 'pick-reasoning';
 
+/** KV TTL for draft data (1 hour in seconds). Using explicit TTL because ttl:null sends 0 to the server, which gets clamped to the 60s minimum. */
+export const DRAFT_KV_TTL = 3600;
+
 // KV key constants
 export const KEY_BOARD_STATE = 'board';
 export const KEY_AVAILABLE_PLAYERS = 'available-players';

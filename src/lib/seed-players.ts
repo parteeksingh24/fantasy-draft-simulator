@@ -3,6 +3,7 @@ import {
 	type Player,
 	KV_DRAFT_STATE,
 	KEY_AVAILABLE_PLAYERS,
+	DRAFT_KV_TTL,
 } from './types';
 import { SLEEPER_BLOCKLIST } from './sleeper-blocklist';
 
@@ -191,8 +192,8 @@ export async function seedPlayers(kv: KeyValueStorage): Promise<Player[]> {
 
 	// Store available player list and seed timestamp in KV
 	await Promise.all([
-		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: null }),
-		kv.set(KV_DRAFT_STATE, 'seeded-at', Date.now(), { ttl: null }),
+		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, players, { ttl: DRAFT_KV_TTL }),
+		kv.set(KV_DRAFT_STATE, 'seeded-at', Date.now(), { ttl: DRAFT_KV_TTL }),
 	]);
 
 	return players;

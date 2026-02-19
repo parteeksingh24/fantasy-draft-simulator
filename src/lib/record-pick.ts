@@ -27,6 +27,7 @@ import {
 	TEAM_NAMES,
 	MAX_NOTE_LENGTH,
 	MAX_NOTES_PER_TEAM,
+	DRAFT_KV_TTL,
 } from './types';
 import { detectPersonaShift, type BoardAnalysis } from './board-analysis';
 
@@ -64,7 +65,7 @@ export interface RecordPickResult {
 
 interface KVAdapter {
 	get: <T = unknown>(namespace: string, key: string) => Promise<{ exists: boolean; data: T }>;
-	set: (namespace: string, key: string, value: unknown, options?: { ttl: null }) => Promise<void>;
+	set: (namespace: string, key: string, value: unknown, options?: { ttl: number | null }) => Promise<void>;
 }
 
 function advanceCurrentPick(currentPickNumber: number, settings: DraftSettings): CurrentPick {
@@ -242,9 +243,9 @@ export async function recordPick(
 
 			// Write per-pick key, cumulative array, and scouting note in one batch
 			await Promise.all([
-				kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: null }),
-				kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null }),
-				kv.set(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`, trimmedNotes, { ttl: null }),
+				kv.set(KV_AGENT_STRATEGIES, `shift-${currentPick.pickNumber}`, strategyShift, { ttl: DRAFT_KV_TTL }),
+				kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: DRAFT_KV_TTL }),
+				kv.set(KV_SCOUTING_NOTES, `team-${currentPick.teamIndex}`, trimmedNotes, { ttl: DRAFT_KV_TTL }),
 			]);
 		}
 	}
@@ -277,9 +278,9 @@ export async function recordPick(
 
 	// Write all updated state to KV in parallel
 	await Promise.all([
-		kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, updatedRoster, { ttl: null }),
-		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
-		kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoardState, { ttl: null }),
+		kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, updatedRoster, { ttl: DRAFT_KV_TTL }),
+		kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: DRAFT_KV_TTL }),
+		kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoardState, { ttl: DRAFT_KV_TTL }),
 	]);
 
 	return {

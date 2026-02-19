@@ -31,6 +31,7 @@ import {
 	MAX_NOTE_LENGTH,
 	canDraftPosition,
 	getAvailableSlots,
+	DRAFT_KV_TTL,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -334,7 +335,7 @@ export function createDrafterTools(deps: DrafterToolsDeps) {
 					? notes.slice(notes.length - MAX_NOTES_PER_TEAM)
 					: notes;
 
-				await deps.kv.set(KV_SCOUTING_NOTES, key, trimmed, { ttl: null });
+				await deps.kv.set(KV_SCOUTING_NOTES, key, trimmed, { ttl: DRAFT_KV_TTL });
 
 				return { status: 'ok', noteCount: trimmed.length };
 			},

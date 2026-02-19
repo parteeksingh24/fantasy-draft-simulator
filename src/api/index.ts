@@ -28,6 +28,7 @@ import {
 	KEY_SETTINGS,
 	NUM_TEAMS,
 	TEAM_NAMES,
+	DRAFT_KV_TTL,
 	getAvailableSlots,
 } from '../lib/types';
 
@@ -214,7 +215,7 @@ api.get('/draft/board', async (c) => {
 	});
 });
 
-// POST /draft/pick - Human makes a pick
+// POST /draft/pick - Human makes a pick (uses route-level KV directly to avoid agent KV mismatch)
 api.post('/draft/pick', async (c) => {
 	const body = await c.req.json().catch(() => ({}));
 	const playerId = typeof body.playerId === 'string' ? body.playerId : undefined;
@@ -223,9 +224,57 @@ api.post('/draft/pick', async (c) => {
 		return c.json({ error: 'playerId is required' }, 400);
 	}
 
-	const result = await commissioner.run({
-		action: 'pick' as const,
+	// Read board state directly from route-level KV (same accessor AI picks use)
+	const boardResult = await c.var.kv.get<BoardState>(KV_DRAFT_STATE, KEY_BOARD_STATE);
+	if (!boardResult.exists) {
+		return c.json({ success: false, message: 'No draft in progress. Use Start Draft first.' }, 404);
+	}
+
+	const boardState = boardResult.data;
+	if (boardState.draftComplete) {
+		return c.json({ success: false, message: 'Draft is already complete.', boardState, draftComplete: true });
+	}
+	if (!boardState.currentPick.isHuman) {
+		return c.json({ success: false, message: 'It is not your turn to pick.' }, 409);
+	}
+
+	// Read available players and team roster in parallel
+	const [playersResult, rosterResult] = await Promise.all([
+		c.var.kv.get<Player[]>(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS),
+		c.var.kv.get<Roster>(KV_TEAM_ROSTERS, `team-${boardState.currentPick.teamIndex}`),
+	]);
+
+	if (!playersResult.exists || playersResult.data.length === 0) {
+		return c.json({ success: false, message: 'No available players.' }, 500);
+	}
+
+	const availablePlayers = playersResult.data;
+	const roster: Roster = rosterResult.exists
+		? rosterResult.data
+		: { teamIndex: boardState.currentPick.teamIndex, teamName: TEAM_NAMES[boardState.currentPick.teamIndex] ?? `Team ${boardState.currentPick.teamIndex + 1}` };
+
+	// Find the requested player
+	const pickedPlayer = availablePlayers.find((p) => p.playerId === playerId);
+	if (!pickedPlayer) {
+		return c.json({ success: false, message: 'Player not found or already drafted.' }, 400);
+	}
+
+	// Record the pick (handles position validation, optimistic concurrency, roster + board updates)
+	const result = await recordPick(c.var.kv, {
+		boardState,
+		roster,
+		availablePlayers,
+		pickedPlayer,
+		reasoning: 'Human player selection.',
+		confidence: 1.0,
+	});
+
+	c.var.logger.info('Human pick recorded', {
 		playerId,
+		playerName: pickedPlayer.name,
+		position: pickedPlayer.position,
+		pickNumber: boardState.currentPick.pickNumber,
+		success: result.success,
 	});
 
 	// Fetch all rosters so frontend has immediate state
@@ -843,7 +892,7 @@ api.post('/draft/end', async (c) => {
 
 	// Mark the draft as complete without deleting any KV keys
 	const updatedBoard: BoardState = { ...boardState, draftComplete: true };
-	await c.var.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoard, { ttl: null });
+	await c.var.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, updatedBoard, { ttl: DRAFT_KV_TTL });
 
 	c.var.logger.info('Draft ended early', { picksMade: boardState.picks.length });
 
@@ -900,7 +949,7 @@ api.post('/draft/test/trigger-shift', async (c) => {
 	// Append to existing shifts
 	const existingShifts = await c.var.kv.get<typeof fakeShift[]>(KV_AGENT_STRATEGIES, 'strategy-shifts');
 	const allShifts = existingShifts.exists ? [...existingShifts.data, fakeShift] : [fakeShift];
-	await c.var.kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: null });
+	await c.var.kv.set(KV_AGENT_STRATEGIES, 'strategy-shifts', allShifts, { ttl: DRAFT_KV_TTL });
 
 	c.var.logger.info('Test strategy shift injected', { teamIndex, persona: personaName });
 

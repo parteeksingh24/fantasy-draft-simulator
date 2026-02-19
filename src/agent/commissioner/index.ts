@@ -40,6 +40,7 @@ import {
 	NUM_ROUNDS,
 	TOTAL_PICKS,
 	TEAM_NAMES,
+	DRAFT_KV_TTL,
 } from '../../lib/types';
 
 // --- Drafter agent lookup map ---
@@ -165,11 +166,11 @@ const agent = createAgent('commissioner', {
 			// Initialize all team rosters, persona assignments, board state, and settings in parallel
 			await Promise.all([
 				...Array.from({ length: NUM_TEAMS }, (_, i) =>
-					ctx.kv.set(KV_TEAM_ROSTERS, `team-${i}`, createEmptyRoster(i), { ttl: null }),
+					ctx.kv.set(KV_TEAM_ROSTERS, `team-${i}`, createEmptyRoster(i), { ttl: DRAFT_KV_TTL }),
 				),
-				ctx.kv.set(KV_AGENT_STRATEGIES, KV_PERSONA_ASSIGNMENTS, personaAssignments, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_SETTINGS, settings, { ttl: null }),
+				ctx.kv.set(KV_AGENT_STRATEGIES, KV_PERSONA_ASSIGNMENTS, personaAssignments, { ttl: DRAFT_KV_TTL }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: DRAFT_KV_TTL }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_SETTINGS, settings, { ttl: DRAFT_KV_TTL }),
 			]);
 
 			ctx.logger.info('Draft initialized', {
@@ -540,9 +541,9 @@ const agent = createAgent('commissioner', {
 
 			// Write all updated state to KV in parallel
 			await Promise.all([
-				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: null }),
-				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: null }),
+				ctx.kv.set(KV_TEAM_ROSTERS, `team-${currentPick.teamIndex}`, roster, { ttl: DRAFT_KV_TTL }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_AVAILABLE_PLAYERS, updatedAvailable, { ttl: DRAFT_KV_TTL }),
+				ctx.kv.set(KV_DRAFT_STATE, KEY_BOARD_STATE, boardState, { ttl: DRAFT_KV_TTL }),
 			]);
 
 			ctx.logger.info('Human pick recorded', {

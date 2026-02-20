@@ -4,6 +4,8 @@
 
 [![Watch the demo](https://img.youtube.com/vi/yJaRJKEQafM/maxresdefault.jpg)](https://www.youtube.com/watch?v=yJaRJKEQafM)
 
+<p align="center"><a href="https://www.youtube.com/watch?v=yJaRJKEQafM">Watch the Demo</a></p>
+
 ## Getting Started
 
 ```bash
